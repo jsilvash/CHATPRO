@@ -25,6 +25,7 @@ import src.connectors.models  # noqa: F401 — registrar modelos conectores en B
 import src.contacts.models  # noqa: F401 — registrar modelos contactos en Base.metadata
 import src.inbox.models  # noqa: F401 — registrar modelos inbox en Base.metadata
 import src.knowledge.models  # noqa: F401 — registrar modelos knowledge en Base.metadata
+import src.public_api.models  # noqa: F401 — registrar modelos public_api en Base.metadata
 import src.wa.models  # noqa: F401 — registrar modelos WA en Base.metadata
 from src.main import app
 
