@@ -20,6 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from src.agent.facts_extractor import load_top_facts
 from src.agent.llm import call_claude
 from src.agent.models import Persona, UsageMetric
 from src.agent.prompt_builder import build_system_prompt, is_within_business_hours
@@ -207,7 +208,10 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
 
         _maybe_trigger_summary(db, conversation)
 
-        system_prompt = build_system_prompt(persona)
+        contact_facts = load_top_facts(
+            db, conversation.tenant_id, conversation.wa_contact_phone
+        )
+        system_prompt = build_system_prompt(persona, contact_facts=contact_facts)
         messages = _build_messages(db, conversation, inbound_msg)
 
         t0 = time.perf_counter()

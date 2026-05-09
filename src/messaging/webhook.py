@@ -227,7 +227,21 @@ def _dispatch_message(
     # Invocar al agente si el número tiene persona asignada.
     _maybe_respond_with_agent(db, wn, conv, msg)
 
+    # Extraer hechos del contacto en múltiplos de 5 turnos (falla silenciosamente).
+    _maybe_trigger_facts_extraction(db, conv)
+
     return {"ok": True, "wa_message_id": str(msg.id)}
+
+
+_FACTS_EXTRACTION_EVERY_N_TURNS = 5
+
+
+def _maybe_trigger_facts_extraction(db: Session, conv: WaConversation) -> None:
+    """Extrae hechos del contacto cada N turnos (falla silenciosamente)."""
+    turn_count = getattr(conv, "turn_count", 0) or 0
+    if turn_count > 0 and turn_count % _FACTS_EXTRACTION_EVERY_N_TURNS == 0:
+        from src.agent.facts_extractor import extract_contact_facts
+        extract_contact_facts(db, conv)
 
 
 def _maybe_respond_with_agent(

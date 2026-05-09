@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, time
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.agent.models import Persona
+
+if TYPE_CHECKING:
+    from src.contacts.models import ContactFact
 
 _DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _DAY_IDX = {name: i for i, name in enumerate(_DAY_NAMES)}
@@ -82,11 +86,31 @@ def is_within_business_hours(persona: Persona) -> bool:
     return False
 
 
-def build_system_prompt(persona: Persona) -> str:
-    """Construye el system prompt completo desde la persona.
+def render_contact_memory(facts: "list[ContactFact]") -> str:
+    """Renderiza un bloque <memoria_contacto> con los hechos del contacto.
 
-    El resultado es estable por persona → se puede cachear con cache_control
-    ephemeral en el cliente Anthropic.
+    Devuelve string vacío si no hay hechos.  El bloque se añade al final del
+    system prompt para que no altere el caché de la parte de persona.
+    """
+    if not facts:
+        return ""
+
+    lines = ["<memoria_contacto>", "Hechos conocidos del cliente:"]
+    for fact in facts:
+        source_tag = "manual" if fact.source == "manual" else f"extraído, conf {fact.confidence}"
+        lines.append(f"- {fact.key}: {fact.value_text} ({source_tag})")
+    lines.append("</memoria_contacto>")
+    return "\n".join(lines)
+
+
+def build_system_prompt(
+    persona: Persona,
+    contact_facts: "list[ContactFact] | None" = None,
+) -> str:
+    """Construye el system prompt completo desde la persona y hechos del contacto.
+
+    La parte de persona es estable → puede cachearse con cache_control ephemeral.
+    Los hechos del contacto se añaden al final (varían por conversación).
     """
     lines: list[str] = []
 
@@ -115,5 +139,11 @@ def build_system_prompt(persona: Persona) -> str:
         "\nResponde SIEMPRE en texto plano, sin markdown, sin asteriscos ni emojis, "
         "a menos que el usuario lo solicite explícitamente."
     )
+
+    if contact_facts:
+        memory_block = render_contact_memory(contact_facts)
+        if memory_block:
+            lines.append("")
+            lines.append(memory_block)
 
     return "\n".join(lines).strip()

@@ -24,7 +24,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 1 | Conexión WAHA de un número + webhook + persistencia | ✅ Mergeada a main (PR #1) |
 | 2 | Bot Claude con persona/locale/tono | ✅ Mergeada a main (PR #2) |
 | 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main (PR #3) |
-| 4 | Memoria largo plazo (hechos del contacto) | **Pendiente — próxima** |
+| 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main (PR #4) |
 | 5 | Connector ABC + WooCommerce sync full | Pendiente |
 | 6 | Sync incremental WooCommerce + embeddings | Pendiente |
 | 7 | Tools del agente (catálogo, stock, órdenes) | Pendiente |
@@ -76,7 +76,8 @@ src/
 ├── messaging/           — waha_client, lid_resolver, wa_lookup, dispatcher, ack, typing_state, webhook
 ├── wa/                  — modelos WA (WaNumber/WaSession/WaConversation/WaMessage) + api REST
 ├── utils/               — phone (normalize)
-├── agent/               — (Fase 2+) service, prompt_builder, llm, tools
+├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
+├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer
 └── api/
     └── v1/
         ├── router.py    — incluye todos los routers v1
@@ -89,8 +90,10 @@ tests/
 ├── test_isolation.py    — 5 escenarios de aislamiento + sanity checks
 ├── test_ack.py          — 16 transiciones ACK + timestamps + failed terminal
 ├── test_waha_lid.py     — LID ABORT(-2), cache, capas de resolución
-├── test_wa_api.py       — REST WaNumber: alta, send, QR, isolation
-└── test_waha_webhook.py — eventos message/ack/session.status, dedupe, X-WAHA-Token
+├── test_wa_api.py           — REST WaNumber: alta, send, QR, isolation
+├── test_waha_webhook.py     — eventos message/ack/session.status, dedupe, X-WAHA-Token
+├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
+└── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
