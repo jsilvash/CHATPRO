@@ -1,14 +1,18 @@
-"""Modelos SQLAlchemy para conectores y catálogo de productos (Fase 5).
+"""Modelos SQLAlchemy para conectores y catálogo de productos (Fase 5-6).
 
 Tablas:
-- ``connector_defs``    — definición de cada tipo de conector (woocommerce, shopify…).
-- ``connector_configs`` — instancia de un conector configurada por un tenant.
-- ``products``          — catálogo sincronizado desde el proveedor.
+- ``connector_defs``     — definición de cada tipo de conector (woocommerce, shopify…).
+- ``connector_configs``  — instancia de un conector configurada por un tenant.
+- ``products``           — catálogo sincronizado desde el proveedor.
+- ``product_embeddings`` — embeddings vectoriales de productos (Fase 6).
+- ``orders``             — órdenes/pedidos sincronizados (Fase 6).
 """
 
 import uuid
+from datetime import datetime
 
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -132,4 +136,81 @@ class Product(Base, TimestampMixin):
         sa.Index("ix_products_tenant_sku", "tenant_id", "sku",
                  postgresql_where=sa.text("sku IS NOT NULL")),
         sa.Index("ix_products_tenant_config", "tenant_id", "connector_config_id"),
+    )
+
+
+class ProductEmbedding(Base):
+    """Embedding vectorial de un producto para búsqueda semántica (pgvector).
+
+    El texto embebido es una concatenación de nombre, descripción y atributos.
+    Se regenera cuando el producto cambia via webhook o sync_incremental.
+    """
+
+    __tablename__ = "product_embeddings"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    embedding: Mapped[list] = mapped_column(Vector(1024), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+    )
+
+    __table_args__ = (
+        sa.Index("ix_product_embeddings_tenant_product", "tenant_id", "product_id"),
+    )
+
+
+class Order(Base, TimestampMixin):
+    """Orden/pedido sincronizado desde el proveedor e-commerce del tenant.
+
+    Se puebla via webhooks (order.created / order.updated) y puede usarse para
+    resolver historial de compras de un contacto.
+    """
+
+    __tablename__ = "orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    connector_config_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("connector_configs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    # 'pending'|'processing'|'completed'|'cancelled'|etc.
+    status: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    total: Mapped[float | None] = mapped_column(sa.Numeric(12, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    placed_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tenant_id", "connector_config_id", "external_id",
+            name="uq_orders_tenant_config_external",
+        ),
+        sa.Index("ix_orders_tenant_contact", "tenant_id", "contact_id"),
     )

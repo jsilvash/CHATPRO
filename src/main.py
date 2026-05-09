@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.v1.router import router as v1_router
 from src.auth.tokens import decode_token
 from src.config import get_settings
+from src.connectors.woocommerce.webhook import router as woo_webhook_router
 from src.messaging.webhook import router as waha_webhook_router
 from src.tenancy.context import _tenant_id_var
 
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
 
     app.include_router(v1_router)
     app.include_router(waha_webhook_router)
+    app.include_router(woo_webhook_router)
 
     @app.get("/health")
     def health():

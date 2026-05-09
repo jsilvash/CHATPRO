@@ -1,3 +1,6 @@
 -- Crea la base de datos de tests si no existe
 SELECT 'CREATE DATABASE chatpro_test OWNER chatpro'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'chatpro_test')\gexec
+
+-- Habilita pgvector en la BD principal
+CREATE EXTENSION IF NOT EXISTS vector;

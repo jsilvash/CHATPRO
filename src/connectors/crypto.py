@@ -17,7 +17,6 @@ import secrets
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-
 _AAD_DEK = b"chatpro-dek-v1"
 _AAD_CREDS = b"chatpro-creds-v1"
 

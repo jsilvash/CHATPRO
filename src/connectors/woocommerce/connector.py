@@ -1,14 +1,15 @@
-"""WooCommerceConnector — implementación completa para Fase 5.
+"""WooCommerceConnector — implementación completa para Fases 5 y 6.
 
 Implementa:
-- configure()       — persiste y cifra credenciales; valida campos requeridos.
-- test_connection() — llama /wc/v3/system_status con las credenciales actuales.
-- sync_full()       — pagina /wc/v3/products y persiste en tabla ``products``.
-- sync_incremental()— placeholder (Fase 6).
-- verify_webhook()  — verifica firma HMAC-SHA256 (Fase 6).
-- webhook_handler() — placeholder (Fase 6).
-- expose_tools()    — 3 tools semánticos para el agente.
-- search()          — búsqueda full-text sobre ``products`` (pgvector en Fase 6).
+- configure()         — persiste y cifra credenciales; valida campos requeridos.
+- test_connection()   — llama /wc/v3/system_status con las credenciales actuales.
+- sync_full()         — pagina /wc/v3/products y persiste en tabla ``products``.
+- sync_incremental()  — GET /wc/v3/products?modified_after=since (Fase 6).
+- verify_webhook()    — verifica firma HMAC-SHA256 (Fase 6).
+- webhook_handler()   — procesa product/order events (Fase 6).
+- embed_product()     — genera embedding con Voyage/OpenAI y lo guarda (Fase 6).
+- expose_tools()      — 3 tools semánticos para el agente.
+- search()            — búsqueda híbrida texto + pgvector cosine + rerank (Fase 6).
 """
 
 import hashlib
@@ -18,9 +19,10 @@ import secrets
 import uuid
 from base64 import b64decode
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
+from sqlalchemy import text
 
 from src.connectors.base import (
     Connector,
@@ -30,7 +32,7 @@ from src.connectors.base import (
     WebhookVerification,
 )
 from src.connectors.crypto import decrypt_credentials, encrypt_credentials
-from src.connectors.models import ConnectorConfig, ConnectorDef, Product
+from src.connectors.models import ConnectorConfig, ConnectorDef, Order, Product, ProductEmbedding
 from src.db.session import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ class WooCommerceConnector(Connector):
 
     @contextmanager
     def _get_db(self):
-        """Context manager que reutiliza ``_db_session`` si existe, o abre una nueva."""
+        """Reutiliza ``_db_session`` si existe, o abre una nueva."""
         if self._db_session is not None:
             yield self._db_session
         else:
@@ -62,7 +64,6 @@ class WooCommerceConnector(Connector):
                 yield db
 
     def _load_credentials(self) -> dict:
-        """Carga y descifra las credenciales desde BD."""
         if self._credentials is not None:
             return self._credentials
 
@@ -89,7 +90,6 @@ class WooCommerceConnector(Connector):
     # ── configure ─────────────────────────────────────────────────────────────
 
     def configure(self, credentials: dict) -> None:
-        """Persiste credenciales cifradas y genera webhook_secret."""
         required = {"site_url", "consumer_key", "consumer_secret"}
         missing = required - credentials.keys()
         if missing:
@@ -104,7 +104,7 @@ class WooCommerceConnector(Connector):
             "consumer_key": credentials["consumer_key"],
             "consumer_secret": credentials["consumer_secret"],
         })
-        self._credentials = None  # invalidar cache
+        self._credentials = None
 
         with self._get_db() as db:
             config = db.get(ConnectorConfig, self.config_id)
@@ -123,7 +123,6 @@ class WooCommerceConnector(Connector):
     # ── test_connection ───────────────────────────────────────────────────────
 
     def test_connection(self) -> bool:
-        """Llama /wc/v3/system_status y actualiza status en BD."""
         try:
             with self._build_client() as client:
                 resp = client.get("/wp-json/wc/v3/system_status")
@@ -152,8 +151,7 @@ class WooCommerceConnector(Connector):
     # ── sync_full ─────────────────────────────────────────────────────────────
 
     def sync_full(self) -> SyncResult:
-        """Pagina /wc/v3/products y persiste en tabla products."""
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         stats = {"processed": 0, "created": 0, "updated": 0, "deleted": 0}
         errors: list[str] = []
 
@@ -166,7 +164,6 @@ class WooCommerceConnector(Connector):
         else:
             self._update_config_sync_ok()
 
-        finished_at = datetime.now(timezone.utc)
         return SyncResult(
             items_processed=stats["processed"],
             items_created=stats["created"],
@@ -174,23 +171,31 @@ class WooCommerceConnector(Connector):
             items_deleted=stats["deleted"],
             errors=errors,
             started_at=started_at,
-            finished_at=finished_at,
+            finished_at=datetime.now(UTC),
         )
 
-    def _sync_products_pages(self, stats: dict, errors: list[str]) -> None:
+    def _sync_products_pages(
+        self,
+        stats: dict,
+        errors: list[str],
+        extra_params: dict | None = None,
+    ) -> None:
         page = 1
+        params_base = {
+            "per_page": _PAGE_SIZE,
+            "status": "publish",
+            "orderby": "id",
+            "order": "asc",
+        }
+        if extra_params:
+            params_base.update(extra_params)
+
         with self._build_client() as client:
             while True:
                 try:
                     resp = client.get(
                         "/wp-json/wc/v3/products",
-                        params={
-                            "per_page": _PAGE_SIZE,
-                            "page": page,
-                            "status": "publish",
-                            "orderby": "id",
-                            "order": "asc",
-                        },
+                        params={**params_base, "page": page},
                     )
                     resp.raise_for_status()
                 except httpx.HTTPError as exc:
@@ -205,9 +210,7 @@ class WooCommerceConnector(Connector):
                     try:
                         self._upsert_product(raw_product, stats)
                     except Exception as exc:
-                        errors.append(
-                            f"Producto {raw_product.get('id')}: {exc}"
-                        )
+                        errors.append(f"Producto {raw_product.get('id')}: {exc}")
 
                 stats["processed"] += len(items)
 
@@ -250,7 +253,7 @@ class WooCommerceConnector(Connector):
         with self._get_db() as db:
             config = db.get(ConnectorConfig, self.config_id)
             if config:
-                config.last_full_sync_at = datetime.now(timezone.utc)
+                config.last_full_sync_at = datetime.now(UTC)
                 config.last_error = None
                 config.status = "connected"
                 if self._db_session is None:
@@ -265,21 +268,49 @@ class WooCommerceConnector(Connector):
                 if self._db_session is None:
                     db.commit()
 
-    # ── sync_incremental (Fase 6) ─────────────────────────────────────────────
+    def _update_config_incremental_sync_ok(self) -> None:
+        with self._get_db() as db:
+            config = db.get(ConnectorConfig, self.config_id)
+            if config:
+                config.last_incremental_sync_at = datetime.now(UTC)
+                config.last_error = None
+                if self._db_session is None:
+                    db.commit()
+                else:
+                    db.flush()
+
+    # ── sync_incremental ──────────────────────────────────────────────────────
 
     def sync_incremental(self, since: datetime) -> SyncResult:
-        started_at = datetime.now(timezone.utc)
+        """Sincronización incremental de productos modificados desde ``since``."""
+        started_at = datetime.now(UTC)
+        stats = {"processed": 0, "created": 0, "updated": 0, "deleted": 0}
+        errors: list[str] = []
+
+        since_iso = since.isoformat()
+        try:
+            self._sync_products_pages(
+                stats,
+                errors,
+                extra_params={"modified_after": since_iso, "orderby": "modified"},
+            )
+        except Exception as exc:
+            errors.append(f"Error en sync_incremental: {exc}")
+            logger.exception("sync_incremental WooCommerce falló")
+        else:
+            self._update_config_incremental_sync_ok()
+
         return SyncResult(
-            items_processed=0,
-            items_created=0,
-            items_updated=0,
-            items_deleted=0,
-            errors=["sync_incremental no implementado aún (Fase 6)"],
+            items_processed=stats["processed"],
+            items_created=stats["created"],
+            items_updated=stats["updated"],
+            items_deleted=stats["deleted"],
+            errors=errors,
             started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(UTC),
         )
 
-    # ── verify_webhook (Fase 6) ───────────────────────────────────────────────
+    # ── verify_webhook ────────────────────────────────────────────────────────
 
     def verify_webhook(self, payload: bytes, headers: dict[str, str]) -> WebhookVerification:
         """Verifica X-WC-Webhook-Signature (HMAC-SHA256 base64)."""
@@ -287,6 +318,8 @@ class WooCommerceConnector(Connector):
             config = db.get(ConnectorConfig, self.config_id)
             if config is None:
                 return WebhookVerification(valid=False, reason="config no encontrada")
+            if config.tenant_id != self.tenant_id:
+                return WebhookVerification(valid=False, reason="tenant no coincide")
             secret = config.webhook_secret
 
         sig_header = headers.get("x-wc-webhook-signature", "")
@@ -306,10 +339,96 @@ class WooCommerceConnector(Connector):
 
         return WebhookVerification(valid=True)
 
-    # ── webhook_handler (Fase 6) ──────────────────────────────────────────────
+    # ── webhook_handler ───────────────────────────────────────────────────────
 
     def webhook_handler(self, payload: dict, headers: dict[str, str]) -> None:
-        pass
+        """Procesa un webhook verificado de WooCommerce.
+
+        Topics soportados: product.created, product.updated, product.deleted,
+        order.created, order.updated.
+        """
+        topic = headers.get("x-wc-webhook-topic", "")
+        logger.info(
+            "webhook_handler: topic=%s tenant=%s config=%s",
+            topic, self.tenant_id, self.config_id,
+        )
+
+        if topic in ("product.created", "product.updated"):
+            stats: dict = {"processed": 0, "created": 0, "updated": 0, "deleted": 0}
+            self._upsert_product(payload, stats)
+            # Intenta generar embedding (puede fallar si no hay clave API configurada)
+            external_id = str(payload.get("id", ""))
+            if external_id:
+                product_id = self._get_product_id_by_external(external_id)
+                if product_id:
+                    try:
+                        self.embed_product(product_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "embed_product falló para external_id=%s: %s",
+                            external_id, exc,
+                        )
+
+        elif topic == "product.deleted":
+            external_id = str(payload.get("id", ""))
+            if external_id:
+                self._soft_delete_by_external_id(external_id)
+
+        elif topic in ("order.created", "order.updated"):
+            self._upsert_order(payload)
+
+        else:
+            logger.debug("topic desconocido ignorado: %s", topic)
+
+    # ── embed_product ─────────────────────────────────────────────────────────
+
+    def embed_product(self, product_id: uuid.UUID) -> None:
+        """Genera y guarda el embedding del producto en ``product_embeddings``."""
+        from src.connectors.embeddings import generate_embedding
+
+        with self._get_db() as db:
+            product = db.get(Product, product_id)
+            if product is None or product.tenant_id != self.tenant_id:
+                return
+
+            parts = [product.name]
+            if product.description_short:
+                parts.append(product.description_short)
+            if product.sku:
+                parts.append(f"SKU: {product.sku}")
+            if isinstance(product.categories, list):
+                cats = ", ".join(str(c) for c in product.categories if c)
+                if cats:
+                    parts.append(f"Categorías: {cats}")
+            content = " | ".join(p for p in parts if p)
+
+            vector = generate_embedding(content)
+
+            existing = (
+                db.query(ProductEmbedding)
+                .filter(
+                    ProductEmbedding.product_id == product_id,
+                    ProductEmbedding.tenant_id == self.tenant_id,
+                )
+                .first()
+            )
+            if existing:
+                existing.content = content
+                existing.embedding = vector
+            else:
+                emb = ProductEmbedding(
+                    id=uuid.uuid4(),
+                    tenant_id=self.tenant_id,
+                    product_id=product_id,
+                    content=content,
+                    embedding=vector,
+                )
+                db.add(emb)
+
+            if self._db_session is None:
+                db.commit()
+            else:
+                db.flush()
 
     # ── expose_tools ──────────────────────────────────────────────────────────
 
@@ -376,7 +495,7 @@ class WooCommerceConnector(Connector):
             ),
         ]
 
-    # ── search ────────────────────────────────────────────────────────────────
+    # ── search (híbrida: ILIKE + pgvector cosine + rerank) ────────────────────
 
     def search(
         self,
@@ -384,10 +503,16 @@ class WooCommerceConnector(Connector):
         top_k: int = 10,
         filters: dict | None = None,
     ) -> list[SearchResult]:
-        """Búsqueda full-text sobre productos en BD local."""
-        results: list[SearchResult] = []
+        """Búsqueda híbrida: texto (ILIKE) + vectorial (pgvector cosine) + rerank.
+
+        Pesos: texto=0.4, vector=0.6. Si embeddings no disponibles, solo texto.
+        """
+        # {product_id_str: {"product": Product, "text_score": float, "vec_score": float}}
+        candidates: dict[str, dict] = {}
+
         with self._get_db() as db:
-            q = (
+            # ── 1. Búsqueda por texto (ILIKE) ─────────────────────────────────
+            text_matches = (
                 db.query(Product)
                 .filter(
                     Product.tenant_id == self.tenant_id,
@@ -399,18 +524,75 @@ class WooCommerceConnector(Connector):
                     | Product.description_short.ilike(f"%{query}%")
                     | Product.sku.ilike(f"%{query}%"),
                 )
-                .limit(top_k)
+                .limit(top_k * 2)
                 .all()
             )
+            for p in text_matches:
+                candidates[str(p.id)] = {"product": p, "text_score": 1.0, "vec_score": 0.0}
 
-            for p in q:
+            # ── 2. Búsqueda vectorial (cosine via pgvector) ───────────────────
+            try:
+                from src.connectors.embeddings import generate_embedding
+
+                query_vector = generate_embedding(query)
+                qvec_str = "[" + ",".join(str(float(v)) for v in query_vector) + "]"
+
+                rows = db.execute(
+                    text("""
+                        SELECT p.id::text,
+                               1 - (pe.embedding <=> CAST(:qvec AS vector)) AS similarity
+                        FROM products p
+                        JOIN product_embeddings pe ON pe.product_id = p.id
+                        WHERE p.tenant_id = :tid
+                          AND p.connector_config_id = :cid
+                          AND p.deleted_at IS NULL
+                          AND pe.tenant_id = :tid
+                        ORDER BY pe.embedding <=> CAST(:qvec AS vector)
+                        LIMIT :k
+                    """),
+                    {
+                        "qvec": qvec_str,
+                        "tid": str(self.tenant_id),
+                        "cid": str(self.config_id),
+                        "k": top_k,
+                    },
+                ).fetchall()
+
+                for row in rows:
+                    pid_str = str(row[0])
+                    similarity = max(0.0, float(row[1]))
+                    if pid_str in candidates:
+                        candidates[pid_str]["vec_score"] = similarity
+                    else:
+                        product = db.get(Product, uuid.UUID(pid_str))
+                        if product:
+                            candidates[pid_str] = {
+                                "product": product,
+                                "text_score": 0.0,
+                                "vec_score": similarity,
+                            }
+
+            except Exception as exc:
+                logger.debug("Búsqueda vectorial no disponible: %s", exc)
+
+            # ── 3. Rerank por score combinado ─────────────────────────────────
+            ranked = sorted(
+                candidates.values(),
+                key=lambda x: x["text_score"] * 0.4 + x["vec_score"] * 0.6,
+                reverse=True,
+            )
+
+            results = []
+            for item in ranked[:top_k]:
+                p = item["product"]
+                score = item["text_score"] * 0.4 + item["vec_score"] * 0.6
                 results.append(
                     SearchResult(
                         id=str(p.id),
                         title=p.name,
                         snippet=p.description_short or "",
                         url=p.url,
-                        score=1.0,
+                        score=score,
                         metadata={
                             "sku": p.sku,
                             "external_id": p.external_id,
@@ -422,7 +604,86 @@ class WooCommerceConnector(Connector):
                         },
                     )
                 )
-        return results
+            return results
+
+    # ── Helpers privados ──────────────────────────────────────────────────────
+
+    def _get_product_id_by_external(self, external_id: str) -> uuid.UUID | None:
+        with self._get_db() as db:
+            product = (
+                db.query(Product)
+                .filter(
+                    Product.tenant_id == self.tenant_id,
+                    Product.connector_config_id == self.config_id,
+                    Product.external_id == external_id,
+                )
+                .first()
+            )
+            return product.id if product else None
+
+    def _soft_delete_by_external_id(self, external_id: str) -> None:
+        with self._get_db() as db:
+            product = (
+                db.query(Product)
+                .filter(
+                    Product.tenant_id == self.tenant_id,
+                    Product.connector_config_id == self.config_id,
+                    Product.external_id == external_id,
+                )
+                .first()
+            )
+            if product:
+                product.deleted_at = datetime.now(UTC)
+                if self._db_session is None:
+                    db.commit()
+                else:
+                    db.flush()
+
+    def _upsert_order(self, raw: dict) -> None:
+        external_id = str(raw.get("id", ""))
+        if not external_id or external_id == "":
+            return
+
+        placed_at = None
+        date_str = raw.get("date_created") or raw.get("date_created_gmt")
+        if date_str:
+            try:
+                placed_at = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+
+        with self._get_db() as db:
+            existing = (
+                db.query(Order)
+                .filter(
+                    Order.tenant_id == self.tenant_id,
+                    Order.connector_config_id == self.config_id,
+                    Order.external_id == external_id,
+                )
+                .first()
+            )
+
+            data = {
+                "tenant_id": self.tenant_id,
+                "connector_config_id": self.config_id,
+                "external_id": external_id,
+                "status": raw.get("status"),
+                "total": _to_decimal(raw.get("total")),
+                "currency": raw.get("currency"),
+                "placed_at": placed_at,
+                "raw": raw,
+            }
+
+            if existing:
+                for k, v in data.items():
+                    setattr(existing, k, v)
+            else:
+                db.add(Order(id=uuid.uuid4(), **data))
+
+            if self._db_session is None:
+                db.commit()
+            else:
+                db.flush()
 
 
 # ── Helpers de mapeo ──────────────────────────────────────────────────────────
@@ -453,7 +714,7 @@ def _map_woo_product(raw: dict, tenant_id: uuid.UUID, config_id: uuid.UUID) -> d
         "variations": raw.get("variations") or None,
         "raw": raw,
         "deleted_at": None,
-        "updated_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(UTC),
     }
 
 
@@ -468,6 +729,7 @@ def _to_decimal(value) -> float | None:
 
 def _strip_html(text: str) -> str:
     import re
+
     return re.sub(r"<[^>]+>", "", text or "").strip()
 
 

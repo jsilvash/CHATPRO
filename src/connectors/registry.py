@@ -22,7 +22,7 @@ CONNECTOR_REGISTRY: dict[str, type["Connector"]] = {}
 
 
 def _build_registry() -> dict[str, type["Connector"]]:
-    reg: dict[str, type["Connector"]] = {}
+    reg: dict[str, type[Connector]] = {}
     try:
         reg["woocommerce"] = _load_woocommerce()
     except Exception:

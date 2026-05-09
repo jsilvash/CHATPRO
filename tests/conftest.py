@@ -11,19 +11,18 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from src.api.v1.tenants import TenantCreate
+import src.agent.models  # noqa: F401 — registrar modelos agente en Base.metadata
+import src.connectors.models  # noqa: F401 — registrar modelos conectores en Base.metadata
+import src.contacts.models  # noqa: F401 — registrar modelos contactos en Base.metadata
+import src.wa.models  # noqa: F401 — registrar modelos WA en Base.metadata
 from src.auth.passwords import hash_password
 from src.auth.tokens import create_access_token
 from src.db.base import Base
 from src.db.models import Tenant, User
 from src.db.session import get_db
-import src.agent.models  # noqa: F401 — registrar modelos agente en Base.metadata
-import src.connectors.models  # noqa: F401 — registrar modelos conectores en Base.metadata
-import src.contacts.models  # noqa: F401 — registrar modelos contactos en Base.metadata
-import src.wa.models  # noqa: F401 — registrar modelos WA en Base.metadata
 from src.main import app
 
 _TEST_DB_URL = os.environ.get(
@@ -38,6 +37,9 @@ _TestSession = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():
     """Crea el schema fresco para toda la sesión de tests."""
+    # Habilita pgvector antes de crear tablas (necesario para VECTOR(1024)).
+    with _engine.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.drop_all(_engine)
     Base.metadata.create_all(_engine)
     yield

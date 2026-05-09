@@ -26,7 +26,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main (PR #3) |
 | 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main (PR #4) |
 | 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main (PR #5) |
-| 6 | Sync incremental WooCommerce + embeddings | Pendiente |
+| 6 | Sync incremental WooCommerce + embeddings | ✅ Mergeada a main (PR #6) |
 | 7 | Tools del agente (catálogo, stock, órdenes) | Pendiente |
 | 8 | Inbox + handoff humano | Pendiente |
 | 9 | RAG genérico (PDF/URL) | Pendiente |
@@ -78,7 +78,9 @@ src/
 ├── utils/               — phone (normalize)
 ├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
 ├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
-│   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
+│   ├── embeddings.py    — generate_embedding (Voyage AI / OpenAI fallback)
+│   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full/sync_incremental
+│                          webhook HMAC, webhook_handler, embed_product, search() híbrida + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer
 └── api/
     └── v1/
@@ -96,7 +98,9 @@ tests/
 ├── test_waha_webhook.py     — eventos message/ack/session.status, dedupe, X-WAHA-Token
 ├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
 ├── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
-└── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
+├── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
+└── test_woo_incremental.py  — webhook HMAC, product/order events, sync_incremental,
+                               embed_product, search() híbrida (Fase 6)
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea

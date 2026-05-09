@@ -11,7 +11,6 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-
 ConnectorKind = Literal["ecommerce", "knowledge", "crm", "calendar"]
 
 

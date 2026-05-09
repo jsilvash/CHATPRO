@@ -6,7 +6,7 @@ que se envía como ``tool_result`` al agente.
 
 import uuid
 
-from src.connectors.models import ConnectorConfig, Product
+from src.connectors.models import Product
 from src.db.session import get_db_session
 
 
