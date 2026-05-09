@@ -21,6 +21,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_user, require_role
+from src.billing.quota import check_quota
 from src.config import get_settings
 from src.db.models import User
 from src.db.session import get_db
@@ -332,6 +333,8 @@ def send_text(
     """
     tenant_id = get_current_tenant_id()
     wn = _ensure_owned(db, wa_number_id, tenant_id)
+
+    check_quota(tenant_id, "messages_out", 1, db)
 
     # Resolver/crear conversación para este destinatario.
     from src.utils.phone import normalize_phone
