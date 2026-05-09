@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Conectores (Fase 5) — KEK de 32 bytes en hexadecimal para cifrado AES-GCM
     connector_master_key: str = ""
 
+    # Voyage AI (Fase 9) — embeddings para RAG
+    voyage_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

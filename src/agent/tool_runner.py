@@ -68,6 +68,27 @@ def escalar_a_humano(
     }
 
 
+def buscar_knowledge(
+    query: str,
+    max_results: int = 5,
+    wa_number_id: str | None = None,
+    *,
+    db: Session,
+    conversation: WaConversation,
+    **_kwargs,
+) -> dict:
+    """Busca en la base de conocimiento RAG del tenant."""
+    from src.knowledge.tools import buscar_knowledge as _buscar_knowledge
+
+    return _buscar_knowledge(
+        query,
+        max_results=max_results,
+        wa_number_id=wa_number_id,
+        tenant_id=conversation.tenant_id,
+        db=db,
+    )
+
+
 _BUILTIN_TOOLS: dict[str, dict] = {
     "escalar_a_humano": {
         "schema": {
@@ -88,6 +109,37 @@ _BUILTIN_TOOLS: dict[str, dict] = {
             },
         },
         "callable": escalar_a_humano,
+    },
+    "buscar_knowledge": {
+        "schema": {
+            "name": "buscar_knowledge",
+            "description": (
+                "Busca información en la base de conocimiento del tenant "
+                "(manuales, FAQs, políticas, documentos internos). "
+                "Usa esta herramienta cuando el cliente pregunte algo que podría "
+                "estar en los documentos cargados."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Pregunta o tema a buscar en los documentos.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Número máximo de fragmentos relevantes (1-10).",
+                        "default": 5,
+                    },
+                    "wa_number_id": {
+                        "type": "string",
+                        "description": "UUID del número de WhatsApp para filtrar por número específico (opcional).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        "callable": buscar_knowledge,
     },
 }
 
