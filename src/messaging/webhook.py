@@ -222,7 +222,32 @@ def _dispatch_message(
     from src.messaging.typing_state import clear_typing
     clear_typing(wn.waha_session_name, contact_phone)
 
+    # Invocar al agente si el número tiene persona asignada.
+    _maybe_respond_with_agent(db, wn, conv, msg)
+
     return {"ok": True, "wa_message_id": str(msg.id)}
+
+
+def _maybe_respond_with_agent(
+    db: Session,
+    wn: WaNumber,
+    conv: WaConversation,
+    inbound_msg: WaMessage,
+) -> None:
+    """Llama al agente si el número tiene persona asignada.
+
+    Los errores se tragan aquí para que el webhook nunca falle por el agente.
+    La llamada es síncrona en Fase 2; Celery lo asincrona en Fase 11.
+    """
+    if getattr(wn, "persona_id", None) is None:
+        return
+    try:
+        from src.agent import service as agent_service
+        agent_service.respond(db, conv, inbound_msg)
+    except Exception:
+        logger.exception(
+            "webhook: error invocando agent.respond conv=%s", conv.id
+        )
 
 
 def _dispatch_message_ack(db: Session, wn: WaNumber, event: dict) -> dict:
