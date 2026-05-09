@@ -20,6 +20,7 @@ from src.auth.tokens import create_access_token
 from src.db.base import Base
 from src.db.models import Tenant, User
 from src.db.session import get_db
+import src.agent.models  # noqa: F401 — registrar modelos agente en Base.metadata
 import src.wa.models  # noqa: F401 — registrar modelos WA en Base.metadata
 from src.main import app
 
