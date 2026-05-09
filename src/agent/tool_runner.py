@@ -42,20 +42,29 @@ def escalar_a_humano(
     conversation: WaConversation,
     **_kwargs,
 ) -> dict:
-    """Marca la conversación como ``waiting_agent`` para handoff humano.
+    """Marca la conversación como ``waiting_agent`` y registra el HandoffEvent."""
+    from datetime import UTC, datetime
 
-    El agente la llama cuando no puede resolver el caso, el cliente lo pide
-    explícitamente, o se exceden los caps de tool calls / costo.
-    """
+    from src.inbox.models import HandoffEvent
+
+    motivo_efectivo = motivo or "solicitado_por_cliente"
     conversation.status = "waiting_agent"
     db.add(conversation)
+
+    evento = HandoffEvent(
+        tenant_id=conversation.tenant_id,
+        wa_conversation_id=conversation.id,
+        motivo=motivo_efectivo,
+        opened_at=datetime.now(UTC),
+    )
+    db.add(evento)
     db.flush()
     return {
         "ok": True,
         "mensaje": (
             "Te derivo a un agente humano. En breve te contactamos para ayudarte."
         ),
-        "motivo": motivo or "solicitado_por_cliente",
+        "motivo": motivo_efectivo,
     }
 
 

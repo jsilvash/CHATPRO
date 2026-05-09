@@ -28,7 +28,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main (PR #5) |
 | 6 | Sync incremental WooCommerce + embeddings | Pendiente |
 | 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main (PR #7) |
-| 8 | Inbox + handoff humano | Pendiente |
+| 8 | Inbox + handoff humano | ✅ Mergeada a main (PR #8) |
 | 9 | RAG genérico (PDF/URL) | Pendiente |
 | 10 | API pública + webhooks salientes | Pendiente |
 | 11 | Billing + métricas + cuotas | Pendiente |
@@ -80,6 +80,7 @@ src/
 ├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
 │   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer, tool_runner (Fase 7)
+├── inbox/               — (Fase 8) HandoffEvent + API REST /inbox (list/get/take/reply/close)
 └── api/
     └── v1/
         ├── router.py    — incluye todos los routers v1
@@ -96,7 +97,8 @@ tests/
 ├── test_waha_webhook.py     — eventos message/ack/session.status, dedupe, X-WAHA-Token
 ├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
 ├── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
-└── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
+├── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
+└── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea

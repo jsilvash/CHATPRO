@@ -378,10 +378,19 @@ def _stringify_for_anthropic(output: dict) -> str:
 def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -> None:
     """Genera y persiste la respuesta del bot para un mensaje inbound.
 
-    Devuelve silenciosamente si la conversación no tiene persona asignada.
+    Devuelve silenciosamente si la conversación no tiene persona asignada o si
+    ya tiene un humano asignado (status != "bot").
     Los errores se logean pero no se propagan para no romper el webhook.
     """
     try:
+        if conversation.status != "bot":
+            logger.debug(
+                "agent.respond: conversación en status=%s, bot mudo conv=%s",
+                conversation.status,
+                conversation.id,
+            )
+            return
+
         persona = _load_persona(db, conversation)
         if persona is None:
             return
