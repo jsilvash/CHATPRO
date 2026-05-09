@@ -17,6 +17,7 @@ if db_url:
 # Importar todos los modelos para que Alembic los detecte
 from src.db.base import Base  # noqa: E402
 import src.db.models  # noqa: E402, F401
+import src.wa.models  # noqa: E402, F401
 
 target_metadata = Base.metadata
 
