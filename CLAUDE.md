@@ -25,7 +25,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 2 | Bot Claude con persona/locale/tono | ✅ Mergeada a main (PR #2) |
 | 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main (PR #3) |
 | 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main (PR #4) |
-| 5 | Connector ABC + WooCommerce sync full | Pendiente |
+| 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main (PR #5) |
 | 6 | Sync incremental WooCommerce + embeddings | Pendiente |
 | 7 | Tools del agente (catálogo, stock, órdenes) | Pendiente |
 | 8 | Inbox + handoff humano | Pendiente |
@@ -77,6 +77,8 @@ src/
 ├── wa/                  — modelos WA (WaNumber/WaSession/WaConversation/WaMessage) + api REST
 ├── utils/               — phone (normalize)
 ├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
+├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
+│   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer
 └── api/
     └── v1/
@@ -93,7 +95,8 @@ tests/
 ├── test_wa_api.py           — REST WaNumber: alta, send, QR, isolation
 ├── test_waha_webhook.py     — eventos message/ack/session.status, dedupe, X-WAHA-Token
 ├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
-└── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
+├── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
+└── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
@@ -171,4 +174,6 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Frontend | Next.js 15 + TypeScript | §3 |
 | Modelo embedding | Voyage AI voyage-3 (1024 dims) | §5 |
 | Connector interface | ABC con `configure/sync_full/sync_incremental/webhook_handler/expose_tools/search` | §7 |
+| Cifrado credenciales | AES-GCM con DEK por config, KEK desde `CONNECTOR_MASTER_KEY` env var | §11 |
+| DB session inyectada | Conector recibe `db=` opcional; si no, abre `get_db_session()` propio. Clave para tests. | Fase 5 |
 | Auth | JWT stateless (access 1h, refresh 7d) | §3 |
