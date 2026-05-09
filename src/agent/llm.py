@@ -67,25 +67,47 @@ def call_claude(
         {"model", "input_tokens", "output_tokens",
          "cache_read_input_tokens", "cost_usd"}
     """
+    response, metadata = call_claude_messages(
+        system_prompt, messages, model_id=model_id, max_tokens=max_tokens
+    )
+    text = "".join(
+        block.text for block in response.content if block.type == "text"
+    )
+    return text, metadata
+
+
+def call_claude_messages(
+    system_prompt: str,
+    messages: list[dict],
+    model_id: str = "claude-sonnet-4-6",
+    max_tokens: int = 1024,
+    tools: list[dict] | None = None,
+) -> tuple[anthropic.types.Message, dict]:
+    """Variante que retorna el ``Message`` crudo + metadata.
+
+    Necesario para el loop de tool_use: el caller necesita ``stop_reason`` y
+    ``content`` (incluyendo bloques ``tool_use``). El cómputo de costo es el
+    mismo que ``call_claude``.
+    """
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    response = client.messages.create(
-        model=model_id,
-        max_tokens=max_tokens,
-        system=[
+    kwargs: dict = {
+        "model": model_id,
+        "max_tokens": max_tokens,
+        "system": [
             {
                 "type": "text",
                 "text": system_prompt,
                 "cache_control": {"type": "ephemeral"},
             }
         ],
-        messages=messages,
-    )
+        "messages": messages,
+    }
+    if tools:
+        kwargs["tools"] = tools
 
-    text = "".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    response = client.messages.create(**kwargs)
 
     usage = response.usage
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -100,12 +122,13 @@ def call_claude(
     }
 
     logger.debug(
-        "llm call: model=%s in=%d out=%d cache_read=%d cost=%.6f",
+        "llm call: model=%s in=%d out=%d cache_read=%d cost=%.6f stop=%s",
         model_id,
         usage.input_tokens,
         usage.output_tokens,
         cache_read,
         cost,
+        getattr(response, "stop_reason", "?"),
     )
 
-    return text, metadata
+    return response, metadata
