@@ -49,8 +49,10 @@ def _build_messages(
     """Construye la lista de mensajes para la API Anthropic.
 
     Toma los últimos N=10 turnos previos al inbound actual y agrega el mensaje
-    actual como último turno "user".  Mensajes consecutivos del mismo role se
-    fusionan para satisfacer el formato alternado de la API.
+    actual como último turno "user".  Si la conversación tiene un ai_summary
+    (generado cuando turn_count > N), lo inyecta como primer par user/assistant
+    comprimido para preservar contexto anterior a la ventana.  Mensajes
+    consecutivos del mismo role se fusionan para satisfacer el formato alternado.
     """
     rows = (
         db.query(WaMessage)
@@ -67,6 +69,13 @@ def _build_messages(
     rows = list(reversed(rows))
 
     messages: list[dict] = []
+
+    # Inyectar resumen como contexto comprimido al inicio de la ventana.
+    ai_summary = getattr(conversation, "ai_summary", None)
+    if ai_summary:
+        messages.append({"role": "user", "content": "[Contexto previo de la conversación]"})
+        messages.append({"role": "assistant", "content": ai_summary})
+
     for row in rows:
         role = "user" if row.direction == "in" else "assistant"
         if messages and messages[-1]["role"] == role:
@@ -83,6 +92,14 @@ def _build_messages(
         messages.append({"role": "user", "content": inbound_text})
 
     return messages
+
+
+def _maybe_trigger_summary(db: Session, conversation: WaConversation) -> None:
+    """Genera resumen de la conversación si turn_count supera la ventana de turnos."""
+    turn_count = getattr(conversation, "turn_count", 0) or 0
+    if turn_count > _HISTORY_TURNS:
+        from src.agent.summarizer import summarize_conversation
+        summarize_conversation(db, conversation)
 
 
 def _persist_outbound(
@@ -187,6 +204,8 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
             if persona.out_of_hours_message:
                 _persist_outbound(db, conversation, wn, persona.out_of_hours_message)
             return
+
+        _maybe_trigger_summary(db, conversation)
 
         system_prompt = build_system_prompt(persona)
         messages = _build_messages(db, conversation, inbound_msg)

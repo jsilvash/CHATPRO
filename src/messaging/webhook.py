@@ -215,6 +215,8 @@ def _dispatch_message(
             raw_payload=event,
         )
         db.add(msg)
+        conv.turn_count = (conv.turn_count or 0) + 1
+        db.add(conv)
         db.commit()
         db.refresh(msg)
 

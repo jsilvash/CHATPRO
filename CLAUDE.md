@@ -23,8 +23,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 0 | Skeleton + multi-tenant + auth + aislamiento | ✅ Mergeada a main (PR #0) |
 | 1 | Conexión WAHA de un número + webhook + persistencia | ✅ Mergeada a main (PR #1) |
 | 2 | Bot Claude con persona/locale/tono | ✅ Mergeada a main (PR #2) |
-| 3 | Memoria corto plazo (últimos N turnos + resumen) | **Pendiente — próxima** |
-| 4 | Memoria largo plazo (hechos del contacto) | Pendiente |
+| 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main (PR #3) |
+| 4 | Memoria largo plazo (hechos del contacto) | **Pendiente — próxima** |
 | 5 | Connector ABC + WooCommerce sync full | Pendiente |
 | 6 | Sync incremental WooCommerce + embeddings | Pendiente |
 | 7 | Tools del agente (catálogo, stock, órdenes) | Pendiente |

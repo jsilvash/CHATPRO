@@ -137,6 +137,12 @@ class WaConversation(Base, TimestampMixin):
     last_message_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    # Resumen generado por Haiku cuando turn_count supera la ventana (Fase 3).
+    ai_summary: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Conteo de mensajes inbound. Dispara generación de resumen cuando > N.
+    turn_count: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, server_default="0"
+    )
 
     __table_args__ = (
         sa.UniqueConstraint(

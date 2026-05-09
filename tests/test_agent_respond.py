@@ -363,3 +363,153 @@ class TestAgentRespond:
 
         assert len(captured_messages) >= 1
         assert captured_messages[-1]["role"] == "user"
+
+    def test_respond_inyecta_ai_summary_cuando_existe(
+        self, db, conversation_and_inbound, wa_number_with_persona
+    ):
+        """Si conv.ai_summary está seteado, el primer par de mensajes lo contiene."""
+        conv, inbound = conversation_and_inbound
+        wn, _ = wa_number_with_persona
+
+        conv.ai_summary = "[v1] El cliente preguntó por zapatos talla 38."
+        db.add(conv)
+        db.flush()
+
+        fake_resp = _fake_anthropic_response("Aquí el contexto.")
+        captured_messages = []
+
+        def capture_create(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+            return fake_resp
+
+        with (
+            patch("src.agent.llm.anthropic.Anthropic") as mock_cls,
+            patch("src.messaging.waha_client.send_text") as mock_send,
+        ):
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+            mock_client.messages.create.side_effect = capture_create
+            mock_send.return_value = {"id": {"_serialized": "true_56912345678_SUM"}}
+
+            from src.agent import service as agent_service
+            agent_service.respond(db, conv, inbound)
+
+        assert len(captured_messages) >= 2
+        # El primer mensaje debe ser el contexto del resumen
+        assert captured_messages[0]["role"] == "user"
+        assert "Contexto previo" in captured_messages[0]["content"]
+        # El segundo debe contener el resumen
+        assert captured_messages[1]["role"] == "assistant"
+        assert "zapatos" in captured_messages[1]["content"]
+
+    def test_respond_15_turnos_no_supera_ventana_mas_resumen(
+        self, db, tenant_a
+    ):
+        """Con 15 mensajes de historial y summary, Claude recibe ≤ N+3 mensajes de turno."""
+        tenant, _ = tenant_a
+
+        persona = Persona(
+            tenant_id=tenant.id,
+            name="Bot 15",
+            system_prompt="Asistente.",
+            tone="amigable",
+            locale="es-CL",
+            timezone="America/Santiago",
+            out_of_hours_message="",
+            business_hours_json={},
+            model_id="claude-sonnet-4-6",
+        )
+        db.add(persona)
+        db.flush()
+
+        wn = WaNumber(
+            tenant_id=tenant.id,
+            label="Num 15 turnos",
+            waha_session_name="test-session-15turns",
+            persona_id=persona.id,
+        )
+        db.add(wn)
+        db.flush()
+
+        conv = WaConversation(
+            tenant_id=tenant.id,
+            wa_number_id=wn.id,
+            wa_contact_phone="56988888888",
+            ai_summary="[v1] Resumen de los primeros 5 mensajes.",
+            turn_count=15,
+        )
+        db.add(conv)
+        db.flush()
+
+        # 14 mensajes de historial previos al inbound actual
+        for i in range(14):
+            direction = "in" if i % 2 == 0 else "out"
+            db.add(WaMessage(
+                tenant_id=tenant.id,
+                wa_number_id=wn.id,
+                wa_conversation_id=conv.id,
+                direction=direction,
+                text=f"Mensaje historial {i}",
+                wa_message_id=f"wa-15t-{i:03d}",
+                ack="",
+                raw_payload={},
+                llm_metadata={},
+            ))
+        db.flush()
+
+        inbound = WaMessage(
+            tenant_id=tenant.id,
+            wa_number_id=wn.id,
+            wa_conversation_id=conv.id,
+            direction="in",
+            text="¿Cuál es el precio?",
+            wa_message_id="wa-15t-inbound",
+            ack="",
+            raw_payload={},
+            llm_metadata={},
+        )
+        db.add(inbound)
+        db.flush()
+
+        captured_messages = []
+
+        def capture_create(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+
+            usage = MagicMock()
+            usage.input_tokens = 200
+            usage.output_tokens = 50
+            usage.cache_read_input_tokens = 0
+            usage.cache_creation_input_tokens = 0
+            block = MagicMock()
+            block.type = "text"
+            block.text = "El precio es X."
+            resp = MagicMock()
+            resp.content = [block]
+            resp.usage = usage
+            resp.stop_reason = "end_turn"
+            return resp
+
+        with (
+            patch("src.agent.llm.anthropic.Anthropic") as mock_cls,
+            patch("src.messaging.waha_client.send_text") as mock_send,
+            # El summarizer también llamará a Claude — mockeamos
+            patch("src.agent.summarizer._do_summarize"),
+        ):
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+            mock_client.messages.create.side_effect = capture_create
+            mock_send.return_value = {"id": {"_serialized": "true_56988888888_15T"}}
+
+            from src.agent import service as agent_service
+            agent_service.respond(db, conv, inbound)
+
+        # N=10 turnos + par de resumen (2) + inbound (ya fusionado o aparte) ≤ 13
+        _N = 10
+        assert len(captured_messages) <= _N + 3, (
+            f"Se enviaron {len(captured_messages)} mensajes, esperado ≤ {_N + 3}"
+        )
+        assert captured_messages[-1]["role"] == "user"
+        # El resumen debe estar al inicio
+        assert captured_messages[0]["role"] == "user"
+        assert "Contexto previo" in captured_messages[0]["content"]
