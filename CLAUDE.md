@@ -27,7 +27,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main (PR #4) |
 | 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main (PR #5) |
 | 6 | Sync incremental WooCommerce + embeddings | Pendiente |
-| 7 | Tools del agente (catálogo, stock, órdenes) | Pendiente |
+| 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main (PR #7) |
 | 8 | Inbox + handoff humano | Pendiente |
 | 9 | RAG genérico (PDF/URL) | Pendiente |
 | 10 | API pública + webhooks salientes | Pendiente |
@@ -79,7 +79,7 @@ src/
 ├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
 ├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
 │   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
-├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer
+├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer, tool_runner (Fase 7)
 └── api/
     └── v1/
         ├── router.py    — incluye todos los routers v1

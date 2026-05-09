@@ -62,6 +62,54 @@ class Persona(Base, TimestampMixin):
     )
 
 
+class ToolInvocation(Base, TimestampMixin):
+    """Registro de cada invocación de tool por el agente (Fase 7).
+
+    Sirve para debug, métricas y facturación. Se persiste antes de continuar
+    el loop, así que un crash a mitad de turno deja rastro.
+    """
+
+    __tablename__ = "tool_invocations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wa_conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("wa_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Mensaje inbound que originó este turno (puede ser NULL en escenarios edge).
+    wa_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("wa_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    tool_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    tool_use_id: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="")
+    input: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    output: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    # success | error | timeout | unknown_tool
+    status: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="success")
+    error: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="")
+    latency_ms: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
+
+    __table_args__ = (
+        sa.Index("ix_tool_invocations_tenant_conv", "tenant_id", "wa_conversation_id"),
+    )
+
+
 class UsageMetric(Base):
     """Acumulado diario de uso LLM por tenant."""
 
