@@ -20,9 +20,9 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 
 | Fase | Título | Estado |
 |---|---|---|
-| 0 | Skeleton + multi-tenant + auth + aislamiento | **En curso** |
-| 1 | Conexión WAHA de un número + webhook + persistencia | Pendiente |
-| 2 | Bot Claude con persona/locale/tono | Pendiente |
+| 0 | Skeleton + multi-tenant + auth + aislamiento | ✅ Mergeada a main (PR #0) |
+| 1 | Conexión WAHA de un número + webhook + persistencia | ✅ Mergeada a main (PR #1) |
+| 2 | Bot Claude con persona/locale/tono | **Pendiente — próxima** |
 | 3 | Memoria corto plazo (últimos N turnos + resumen) | Pendiente |
 | 4 | Memoria largo plazo (hechos del contacto) | Pendiente |
 | 5 | Connector ABC + WooCommerce sync full | Pendiente |
@@ -73,8 +73,9 @@ src/
 │   ├── passwords.py     — hash_password, verify_password (bcrypt)
 │   ├── tokens.py        — create_access_token, create_refresh_token, decode_token (PyJWT)
 │   └── dependencies.py  — get_current_user, require_role
-├── messaging/           — (Fase 1) waha_client, lid_resolver, dispatcher, ack, webhook
-├── wa/                  — (Fase 1) modelos WA: WaNumber, WaSession, WaConversation, WaMessage
+├── messaging/           — waha_client, lid_resolver, wa_lookup, dispatcher, ack, typing_state, webhook
+├── wa/                  — modelos WA (WaNumber/WaSession/WaConversation/WaMessage) + api REST
+├── utils/               — phone (normalize)
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, tools
 └── api/
     └── v1/
@@ -85,8 +86,17 @@ src/
         └── me.py        — /me
 tests/
 ├── conftest.py          — fixtures: db (con rollback), client, tenant_a/b, client_a/b
-└── test_isolation.py    — 5 escenarios de aislamiento + sanity checks
+├── test_isolation.py    — 5 escenarios de aislamiento + sanity checks
+├── test_ack.py          — 16 transiciones ACK + timestamps + failed terminal
+├── test_waha_lid.py     — LID ABORT(-2), cache, capas de resolución
+├── test_wa_api.py       — REST WaNumber: alta, send, QR, isolation
+└── test_waha_webhook.py — eventos message/ack/session.status, dedupe, X-WAHA-Token
 ```
+
+> **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
+> `_tenant_id_var` en el contexto asyncio del request. Sin esto, ContextVar
+> no propaga entre la dependencia `get_current_user` (un threadpool worker)
+> y el endpoint (otro worker distinto). No tocar `src/auth/` ni `src/tenancy/`.
 
 ---
 
