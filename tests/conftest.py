@@ -23,6 +23,8 @@ from src.db.session import get_db
 import src.agent.models  # noqa: F401 — registrar modelos agente en Base.metadata
 import src.connectors.models  # noqa: F401 — registrar modelos conectores en Base.metadata
 import src.contacts.models  # noqa: F401 — registrar modelos contactos en Base.metadata
+import src.inbox.models  # noqa: F401 — registrar modelos inbox en Base.metadata
+import src.knowledge.models  # noqa: F401 — registrar modelos knowledge en Base.metadata
 import src.wa.models  # noqa: F401 — registrar modelos WA en Base.metadata
 from src.main import app
 
@@ -38,6 +40,13 @@ _TestSession = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():
     """Crea el schema fresco para toda la sesión de tests."""
+    from sqlalchemy import text
+    from pgvector.sqlalchemy import Vector  # noqa: F401 — registra el tipo VECTOR
+
+    with _engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+
     Base.metadata.drop_all(_engine)
     Base.metadata.create_all(_engine)
     yield
