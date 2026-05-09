@@ -29,7 +29,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 6 | Sync incremental WooCommerce + embeddings | Pendiente |
 | 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main (PR #7) |
 | 8 | Inbox + handoff humano | ✅ Mergeada a main (PR #8) |
-| 9 | RAG genérico (PDF/URL) | Pendiente |
+| 9 | RAG genérico (PDF/URL) | ✅ Mergeada a main (PR #9) |
 | 10 | API pública + webhooks salientes | Pendiente |
 | 11 | Billing + métricas + cuotas | Pendiente |
 | 12 | Shopify connector (validación interfaz) | Pendiente |
@@ -81,6 +81,7 @@ src/
 │   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer, tool_runner (Fase 7)
 ├── inbox/               — (Fase 8) HandoffEvent + API REST /inbox (list/get/take/reply/close)
+├── knowledge/           — (Fase 9) KbDocument/KbChunk, ingestor PDF/URL, búsqueda RAG híbrida, API /knowledge
 └── api/
     └── v1/
         ├── router.py    — incluye todos los routers v1
@@ -98,7 +99,8 @@ tests/
 ├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
 ├── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
 ├── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
-└── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
+├── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
+└── test_knowledge.py        — chunking, ingestión PDF/URL, búsqueda híbrida, tool agente, API, aislamiento
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
