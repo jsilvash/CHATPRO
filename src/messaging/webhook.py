@@ -215,6 +215,8 @@ def _dispatch_message(
             raw_payload=event,
         )
         db.add(msg)
+        conv.turn_count = (conv.turn_count or 0) + 1
+        db.add(conv)
         db.commit()
         db.refresh(msg)
 
@@ -222,7 +224,46 @@ def _dispatch_message(
     from src.messaging.typing_state import clear_typing
     clear_typing(wn.waha_session_name, contact_phone)
 
+    # Invocar al agente si el número tiene persona asignada.
+    _maybe_respond_with_agent(db, wn, conv, msg)
+
+    # Extraer hechos del contacto en múltiplos de 5 turnos (falla silenciosamente).
+    _maybe_trigger_facts_extraction(db, conv)
+
     return {"ok": True, "wa_message_id": str(msg.id)}
+
+
+_FACTS_EXTRACTION_EVERY_N_TURNS = 5
+
+
+def _maybe_trigger_facts_extraction(db: Session, conv: WaConversation) -> None:
+    """Extrae hechos del contacto cada N turnos (falla silenciosamente)."""
+    turn_count = getattr(conv, "turn_count", 0) or 0
+    if turn_count > 0 and turn_count % _FACTS_EXTRACTION_EVERY_N_TURNS == 0:
+        from src.agent.facts_extractor import extract_contact_facts
+        extract_contact_facts(db, conv)
+
+
+def _maybe_respond_with_agent(
+    db: Session,
+    wn: WaNumber,
+    conv: WaConversation,
+    inbound_msg: WaMessage,
+) -> None:
+    """Llama al agente si el número tiene persona asignada.
+
+    Los errores se tragan aquí para que el webhook nunca falle por el agente.
+    La llamada es síncrona en Fase 2; Celery lo asincrona en Fase 11.
+    """
+    if getattr(wn, "persona_id", None) is None:
+        return
+    try:
+        from src.agent import service as agent_service
+        agent_service.respond(db, conv, inbound_msg)
+    except Exception:
+        logger.exception(
+            "webhook: error invocando agent.respond conv=%s", conv.id
+        )
 
 
 def _dispatch_message_ack(db: Session, wn: WaNumber, event: dict) -> dict:

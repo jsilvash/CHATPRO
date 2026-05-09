@@ -56,6 +56,13 @@ class WaNumber(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, server_default="true"
     )
+    # Persona del agente asignada a este número (Fase 2+). FK opcional.
+    persona_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("personas.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 class WaSession(Base, TimestampMixin):
@@ -130,6 +137,12 @@ class WaConversation(Base, TimestampMixin):
     last_message_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    # Resumen generado por Haiku cuando turn_count supera la ventana (Fase 3).
+    ai_summary: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Conteo de mensajes inbound. Dispara generación de resumen cuando > N.
+    turn_count: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, server_default="0"
+    )
 
     __table_args__ = (
         sa.UniqueConstraint(
@@ -182,6 +195,11 @@ class WaMessage(Base, TimestampMixin):
     error: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="")
     # Payload crudo del webhook (debug / replay).
     raw_payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    # Metadatos LLM del mensaje generado por el agente (solo outbound de bot).
+    # Shape: {model, input_tokens, output_tokens, cache_read_input_tokens, cost_usd, latency_ms}
+    llm_metadata: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
     )
     sent_at: Mapped[datetime | None] = mapped_column(

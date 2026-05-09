@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -26,6 +27,21 @@ def get_session_factory() -> sessionmaker:
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(bind=_get_engine(), autocommit=False, autoflush=False)
     return _SessionLocal
+
+
+@contextmanager
+def get_db_session() -> Generator[Session, None, None]:
+    """Context manager de sesión para uso fuera de FastAPI (Celery, conectores, tests)."""
+    SessionLocal = get_session_factory()
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def get_db() -> Generator[Session, None, None]:
