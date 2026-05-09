@@ -9,14 +9,35 @@
 
 ## 0. Nota sobre archivos de referencia
 
-El prompt original referenciaba dos archivos:
+El prompt original referenciaba `WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md` y `CLAUDE.md` de FitnessIA. El usuario subió a este repo, en la rama `_reference/fitnessia`, una copia de:
 
-- `/home/user/FitnessIA/WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md`
-- `/home/user/FitnessIA/CLAUDE.md`
+- `_reference/fitnessia/CLAUDE.md` (148 líneas — reglas del proyecto SYNEX y ciclo de fases).
+- `_reference/fitnessia/src/messaging/` (todo el módulo de mensajería, incluyendo Evolution/Meta/email — solo nos interesa lo WAHA).
 
-**Ninguno está disponible en este entorno** (la carpeta `FitnessIA` no está montada). El plan se escribió usando exclusivamente lo que el prompt describe sobre el sistema actual: qué reusar (cliente WAHA, resolución LID→PN en 4 capas + cache + retry diferido, dispatch de webhooks, ACK con monotonicidad, persona/locale/tono, multi-tenancy con `tenant_scope()`, modelos `WhatsAppNumber/Conversation/Message`, patrón inbox `bot|waiting_agent|agent|closed`) y qué descartar (Cloud API Meta, Evolution, modelo gym, lifecycle FitnessIA, KPIs gym).
+**`WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md` no se encontró**. Compensamos leyendo directamente el código fuente que se va a portar. Archivos clave revisados línea por línea:
 
-**Acción requerida del usuario:** confirmar si el plan refleja lo que esperan, o aportar el archivo `WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md` para revalidar detalles antes de Fase 1.
+| Archivo | LOC | Qué saqué |
+|---|---|---|
+| `_reference/fitnessia/src/messaging/waha_client.py` | 930 | Cliente WAHA completo, `WahaAPIError(status=-1/-2)`, todos los endpoints (sendText/Image/Video/File/Audio/Voice, sendSeen, start/stopTyping, sendPresence, sessions, contacts, lid-pn). Resolución LID→PN en 4 capas + cache + lock. `ensure_waha_webhooks()` que re-aplica webhooks en cada arranque (CRÍTICO: WAHA NO persiste config de webhooks aunque sí persiste auth). `_preload_lid_pn_cache()` workaround para bug WAHA donde `/contacts/lid-pn` no responde aunque el store tenga el dato. |
+| `_reference/fitnessia/src/messaging/wa_lid_rehydrate.py` | 80 | Helper outbound: rehidrata `conv.wa_contact_phone` (LID persistido) al PN real antes de enviar. Constante `_LID_MIN_DIGITS = 14`. |
+| `_reference/fitnessia/src/messaging/wa_tenant_lookup.py` | 112 | Routing del webhook: `get_wa_number_by_instance_name()` con cache 5 min TTL + `bypass_tenant_filter()`. Idem `get_tenant_by_phone_number_id()` para Cloud API (descartado en Hub). |
+| `_reference/fitnessia/src/messaging/dispatcher.py` | 658 | Fan-out por `connection_type` (`qr`/`waha`/`cloud_api`). En el Hub queda solo el camino WAHA — descartar las ramas QR-Evolution y Cloud. `resolve_wa_number(tenant_id, purpose)` con cadena de fallback: purpose+default → purpose → default → primero. |
+| `_reference/fitnessia/src/messaging/typing_state.py` | 65 | Cache in-memory por `(instance_name, phone)` con TTL configurable. Util para detectar typing del contacto y postergar respuesta del bot. |
+| `_reference/fitnessia/CLAUDE.md` | 148 | Reglas: ciclo de fases (una fase = una sesión = un PR = un merge = un QA = siguiente), handoff entre sesiones, zonas multi-agente, "no push a main sin autorización". Idioma español. |
+
+**Hallazgos del código que actualizan este plan** (detalle en §12 Fase 1):
+
+1. **El campo se llama `evolution_instance_name`** en el modelo legacy — herencia de cuando Evolution era el QR provider. En el Hub renombrar a `waha_session_name` desde el día 1.
+2. **El discriminador `connection_type`** (qr/waha/cloud_api) **se elimina**: en el Hub solo existe WAHA. Borrar el branching del dispatcher.
+3. **`WahaAPIError` tiene dos status code locales especiales:**
+   - `-1` → config faltante / DNS / timeout / payload inválido.
+   - `-2` → LID sin resolver, **ABORT** (no fallback a `@lid` como chatId — causaría envío a número ficticio, ya pasó en prod 2026-04-23).
+4. **Webhook events obligatorios:** `["message", "message.any", "message.ack", "session.status"]`. Borrar `message.ack` deja la fase de ACK inerte aunque el código esté bien.
+5. **`ensure_waha_webhooks()` debe correr en cada arranque del backend.** No es opcional — WAHA persiste credenciales pero no webhooks.
+6. **`_preload_lid_pn_cache()` mitiga bug de WAHA** (issue documentado en el código): `/contacts/lid-pn` devuelve vacío aunque el store sí tiene `lid` en el contacto. Es preload por sesión activa al arranque.
+7. **`purpose` con enum cerrado `lifecycle|support`** (legacy gym): en el Hub son **tags libres** (decisión ya tomada en el prompt). Eliminar el enum.
+
+> Estos hallazgos se traducen a tareas concretas en §12 Fase 1.
 
 ---
 
@@ -1107,11 +1128,33 @@ CREATE INDEX ON audit_log(tenant_id, target_type, target_id);
   - Endpoint `POST /v1/wa-numbers` crea sesión WAHA; devuelve QR.
   - Webhook `POST /webhook/waha/{node_id}` autenticado por `X-WAHA-Token`.
   - Mensajes entrantes se guardan; salientes se envían con cliente WAHA portado.
-  - LID→PN funcionando con las 4 capas + cache.
+  - LID→PN funcionando con las 4 capas + cache + lock.
   - ACK actualiza con monotonicidad (`sent < delivered < read`; `failed` terminal).
+  - `ensure_waha_webhooks()` corre en lifespan startup del backend (re-aplica webhooks tras restart de WAHA).
   - Smoke test E2E con WAHA en docker-compose y un mock-receiver.
-- **Archivos:** `src/messaging/waha_client.py`, `src/messaging/lid_resolver.py`, `src/messaging/ack.py`, `src/wa/` (modelos), endpoints, webhook handler, migrations.
-- **Riesgos:** secretos WAHA mal configurados; reconexión post-restart.
+- **Archivos a portar (limpiando legacy):**
+  - `src/messaging/waha_client.py` ← portar de `_reference/fitnessia/src/messaging/waha_client.py` **renombrando los siguientes símbolos**:
+    - `evolution_instance_name` → `waha_session_name` (en signature de funciones que reciben el campo del modelo) y en el modelo `WhatsAppNumber` → `WaNumber`.
+    - Borrar la rama `connection_type == "qr"` y `cloud_api` en `dispatcher.py`. En el Hub no existe el discriminador.
+    - Conservar tal cual: `WahaAPIError(status=-1, -2)`, `_resolve_target` con ABORT en LID sin resolver, `resolve_lid_to_pn()` en 4 capas con `_LID_CACHE_LOCK`, `_preload_lid_pn_cache()` workaround, `mark_as_read` (sendSeen global), `send_typing` global.
+    - Conservar literal: `webhook_entry["events"] = ["message", "message.any", "message.ack", "session.status"]`. Si se omite `message.ack`, el bloque ACK queda inerte aunque el código esté bien (lección aprendida en SYNEX).
+  - `src/messaging/lid_resolver.py` ← portar la lógica de `wa_lid_rehydrate.py`. Mantener `_LID_MIN_DIGITS = 14`. Renombrar fn a `rehydrate_conversation_phone` sin cambiar comportamiento.
+  - `src/messaging/wa_lookup.py` ← portar de `wa_tenant_lookup.py` **eliminando** `get_tenant_by_phone_number_id` (Cloud API). Conservar solo `get_wa_number_by_session_name()` con cache 5 min + invalidación.
+  - `src/messaging/dispatcher.py` ← reescribir simplificado: solo branch WAHA. Eliminar `purpose` enum y `_tenant_config_for_cloud_api`.
+  - `src/messaging/ack.py` ← nueva (no existe en FitnessIA como archivo separado, está esparcido). Implementar invariante de monotonicidad con tabla de transición y tests de las 16 transiciones.
+  - `src/messaging/typing_state.py` ← portar tal cual (cache TTL para typing del contacto).
+  - `src/messaging/webhook.py` ← nueva. Endpoint `POST /webhook/waha/{node_id}` con verificación `X-WAHA-Token`, dispatch a `message`/`message.any`/`message.ack`/`session.status`. Usa `bypass_tenant_filter()` al inicio para resolver `wa_number_id → tenant_id` y luego entra a `tenant_scope()`.
+  - `src/wa/models.py` ← `WaNumber`, `WaSession`, `WaConversation`, `WaMessage`. Sin `connection_type`. Sin `purpose` enum. Sí `tags TEXT[]` libre. `waha_node_id TEXT DEFAULT 'default'` listo para sharding (§4).
+  - `src/wa/api.py` ← endpoints REST: alta de número, listar, status, QR, request-pairing-code, logout.
+  - `alembic/versions/...` ← migraciones iniciales WAHA.
+- **Decisiones operativas (no obvias del código fuente):**
+  - **Almacenar el QR como evento transitorio** (no persistir): WAHA emite `qr` por webhook `session.status`; el frontend hace polling al endpoint `GET /v1/wa-numbers/{id}/qr` que consulta WAHA y lo devuelve base64. Una vez `WORKING`, no hay QR.
+  - **Reconexión:** un backoff de 3 intentos (0.5/1/2 s) ya está en el cliente; agregar a nivel sesión un retry diferido (5 min, 30 min, 2 h) si `session.status == FAILED`.
+  - **No reusar `purpose`:** el tenant define `tags` libres en `wa_numbers.tags`. Eliminar la cadena de fallback por purpose; reemplazar por: tag explícito → `is_default` → primero activo.
+- **Riesgos específicos:**
+  - **WAHA no persiste webhooks:** si `ensure_waha_webhooks()` no corre en startup, los nuevos mensajes nunca llegan. Test obligatorio: reiniciar WAHA y verificar que entra mensaje.
+  - **`@lid` enviado como chatId** (Bug prod 2026-04-23 SYNEX) → mensaje a número ficticio. **No mergear** sin test que verifica que `WahaAPIError(-2)` se levanta cuando LID no resuelve.
+  - **`X-WAHA-Token` filtrado**: rotación trivial via PUT `/api/sessions/{name}` config; documentar runbook.
 - **PR:** "fase 1: WAHA QR + webhook + persistencia"
 
 ### Fase 2 — Bot Claude con persona/locale/tono (sin tools, sin memoria larga)
@@ -1245,6 +1288,10 @@ CREATE INDEX ON audit_log(tenant_id, target_type, target_id);
 | 12 | **Compartir embeddings entre tenants accidentalmente** | Baja | Crítico | Filtro `tenant_id` obligatorio en TODOS los queries vector; tests específicos; prohibido un índice global sin partitioning. |
 | 13 | **Crecimiento de `tool_invocations` y `wa_messages`** | Alta | Medio | Particionado por mes; política de retención por tenant configurable (default 365 d); archivado a S3 frio. |
 | 14 | **Hot tenant que satura recursos compartidos** | Media | Alto | Rate limit por tenant; quotas; slot reservation en pool de workers Celery (queues por tier); WAHA sharding cuando aplique. |
+| 15 | **WAHA no persiste config de webhooks** (descubierto en código SYNEX `ensure_waha_webhooks`) | Cierta | Crítico (mensajes no entran) | `ensure_waha_webhooks()` en lifespan startup del backend. Health check periódico que verifica que cada sesión activa tiene `webhooks[].url == nuestro_endpoint`. Alerta inmediata si falta. |
+| 16 | **`@lid` enviado como chatId → mensaje a número ficticio** (Bug prod SYNEX 2026-04-23, chat Martín) | Baja con LID resolver | Crítico (mensaje al desconocido equivocado) | Política de ABORT (`WahaAPIError(-2)`) en `_resolve_target` cuando LID no resuelve. **Nunca** fallback a `chatId=<lid>@lid`. Test obligatorio que valida el raise. |
+| 17 | **WAHA `/contacts/lid-pn` devuelve vacío aunque store lo tiene** (bug WAHA conocido) | Cierta | Medio | `_preload_lid_pn_cache()` al arranque por sesión activa. 4 capas de fallback en `resolve_lid_to_pn` (cache → lid-pn → contacts/{lid} → escaneo full). |
+| 18 | **`message.ack` no subscripto silenciosamente** (lección SYNEX FASE_WA_HOOK_ACK_SUBSCRIBE_L) | Media | Alto (UI sin tildes) | `webhook_entry["events"]` literal `["message","message.any","message.ack","session.status"]` con test que verifica config tras `ensure_waha_webhooks`. |
 
 ---
 
@@ -1265,7 +1312,7 @@ CREATE INDEX ON audit_log(tenant_id, target_type, target_id);
 11. **Modelo de billing**: ¿activamos Stripe en Fase 11 o lo posponemos?
 12. **Política de retención** default (mensajes, audit_log, embeddings de memoria).
 13. **¿Se permite que un tenant pueda exportar todos sus datos (GDPR)?** Si sí, marcar que Fase 11 incluye export-zip.
-14. **Confirmar que el plan refleja el sistema actual** (los archivos de referencia no estaban disponibles). Idealmente, aportar `WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md` o snippets clave del cliente WAHA y la resolución LID→PN para revalidar Fase 1.
+14. **Confirmar que el plan refleja el sistema actual.** Los archivos de referencia clave (`waha_client.py`, `wa_lid_rehydrate.py`, `wa_tenant_lookup.py`, `dispatcher.py`, `typing_state.py`, `CLAUDE.md`) ya están en la rama `_reference/fitnessia` y se leyeron línea por línea (ver §0). `WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md` no apareció — si existe en otro lado, sería bienvenido para Fase 0/1; si no existe, este plan + el código de `_reference/` son la fuente de verdad.
 15. **Equipo de revisión** para PRs: ¿quién aprueba antes de merge?
 16. **Idioma de la UI**: ¿solo español o multi-idioma desde el día 1 (i18n)?
 
