@@ -136,6 +136,7 @@ def _persist_outbound(
         conversation=conversation,
     )
 
+    now = datetime.now(UTC)
     msg = WaMessage(
         tenant_id=conversation.tenant_id,
         wa_number_id=wn.id,
@@ -150,15 +151,20 @@ def _persist_outbound(
         hallucination_flag=hallucination_flag,
     )
     if result.success:
-        msg.sent_at = datetime.now(UTC)
+        msg.sent_at = now
     else:
         msg.ack = "failed"
-        msg.failed_at = datetime.now(UTC)
+        msg.failed_at = now
         logger.warning(
             "agent: fallo envío outbound conv=%s error=%s",
             conversation.id,
             result.error,
         )
+
+    # SLA (Fase 25A): primera respuesta del bot.
+    if conversation.first_response_at is None:
+        conversation.first_response_at = now
+        db.add(conversation)
 
     db.add(msg)
     db.commit()
@@ -460,6 +466,22 @@ def _auto_escalate_if_needed(
     )
     db.add(evento)
     db.flush()
+
+    # Notificación in-app a agentes conectados (Fase 25D).
+    try:
+        from src.messaging.ws_manager import notification_manager
+        notification_manager.broadcast_from_sync(
+            conversation.tenant_id,
+            {
+                "event": "conversation.waiting_agent",
+                "conversation_id": str(conversation.id),
+                "wa_contact_phone": conversation.wa_contact_phone,
+                "tenant_id": str(conversation.tenant_id),
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
+    except Exception:
+        pass
 
 
 def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -> None:

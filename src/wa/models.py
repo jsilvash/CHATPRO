@@ -156,6 +156,13 @@ class WaConversation(Base, TimestampMixin):
     turn_count: Mapped[int] = mapped_column(
         sa.Integer, nullable=False, server_default="0"
     )
+    # SLA (Fase 25A): primera respuesta del bot/agente y resolución por agente.
+    first_response_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         sa.UniqueConstraint(

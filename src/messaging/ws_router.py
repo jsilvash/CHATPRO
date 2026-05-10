@@ -1,16 +1,11 @@
-"""WebSocket endpoint para inbox en tiempo real (Fase 23A).
+"""WebSocket endpoints para comunicación en tiempo real.
 
-Ruta:  /ws/inbox/{conversation_id}?token=<jwt_access>
+Rutas:
+- /ws/inbox/{conversation_id}?token=<jwt>  — mensajes de inbox (Fase 23A)
+- /ws/notifications/{tenant_id}?token=<jwt> — notificaciones de agentes (Fase 25D)
 
-Auth:
-- Token JWT (type=access) en query param ?token=.
-- Si el token es inválido o falta → cerrar con código 1008 (Policy Violation).
-- Si el tenant_id del token no coincide con el tenant de la conversación → 1008.
-
-Ciclo de vida:
-- On connect: registrar en ConnectionManager.
-- On disconnect: limpiar del set (WebSocketDisconnect).
-- Mensajes del cliente: ignorados (el canal es solo de server→client).
+Auth: Token JWT (type=access) en query param ?token=.
+Si el token es inválido o el tenant no coincide → cerrar con código 1008.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from src.auth.tokens import decode_token
 from src.db.session import get_db
-from src.messaging.ws_manager import manager
+from src.messaging.ws_manager import manager, notification_manager
 from src.tenancy.context import bypass_tenant_filter
 from src.wa.models import WaConversation
 
@@ -36,12 +31,7 @@ async def ws_inbox(
     token: str = "",
     db: Session = Depends(get_db),
 ) -> None:
-    """Conecta un cliente al canal WS de una conversación.
-
-    El servidor hace push de cada mensaje outbound (bot o agente) a todos
-    los clientes conectados a esa conversation_id.
-    """
-    # ── Auth: validar JWT ────────────────────────────────────────────────────
+    """Conecta un cliente al canal WS de una conversación."""
     try:
         payload = decode_token(token, "access")
         token_tenant_id = uuid.UUID(payload["tid"])
@@ -49,7 +39,6 @@ async def ws_inbox(
         await websocket.close(code=1008)
         return
 
-    # ── Verificar que la conversación pertenece al tenant del token ──────────
     with bypass_tenant_filter():
         conv = (
             db.query(WaConversation)
@@ -61,11 +50,39 @@ async def ws_inbox(
         await websocket.close(code=1008)
         return
 
-    # ── Aceptar y registrar ──────────────────────────────────────────────────
     await manager.connect(conversation_id, websocket)
     try:
         while True:
-            # Canal server→client: ignoramos mensajes entrantes del cliente.
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(conversation_id, websocket)
+
+
+@router.websocket("/ws/notifications/{tenant_id}")
+async def ws_notifications(
+    websocket: WebSocket,
+    tenant_id: uuid.UUID,
+    token: str = "",
+) -> None:
+    """Conecta un agente al canal de notificaciones del tenant.
+
+    Recibe eventos ``conversation.waiting_agent`` cuando el bot escala
+    una conversación y necesita intervención humana.
+    """
+    try:
+        payload = decode_token(token, "access")
+        token_tenant_id = uuid.UUID(payload["tid"])
+    except (ValueError, KeyError, Exception):
+        await websocket.close(code=1008)
+        return
+
+    if token_tenant_id != tenant_id:
+        await websocket.close(code=1008)
+        return
+
+    await notification_manager.connect(tenant_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        notification_manager.disconnect(tenant_id, websocket)
