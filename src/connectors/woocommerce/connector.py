@@ -1,14 +1,14 @@
-"""WooCommerceConnector — implementación completa para Fase 5.
+"""WooCommerceConnector — implementación completa Fases 5 y 6.
 
 Implementa:
-- configure()       — persiste y cifra credenciales; valida campos requeridos.
-- test_connection() — llama /wc/v3/system_status con las credenciales actuales.
-- sync_full()       — pagina /wc/v3/products y persiste en tabla ``products``.
-- sync_incremental()— placeholder (Fase 6).
-- verify_webhook()  — verifica firma HMAC-SHA256 (Fase 6).
-- webhook_handler() — placeholder (Fase 6).
-- expose_tools()    — 3 tools semánticos para el agente.
-- search()          — búsqueda full-text sobre ``products`` (pgvector en Fase 6).
+- configure()        — persiste y cifra credenciales; valida campos requeridos.
+- test_connection()  — llama /wc/v3/system_status con las credenciales actuales.
+- sync_full()        — pagina /wc/v3/products y persiste en tabla ``products``.
+- sync_incremental() — pagina /wc/v3/products?modified_after=since (Fase 6).
+- verify_webhook()   — verifica firma HMAC-SHA256 (X-WC-Webhook-Signature).
+- webhook_handler()  — despacha por topic: product/order events (Fase 6).
+- expose_tools()     — 3 tools semánticos para el agente.
+- search()           — búsqueda híbrida pgvector cosine + BM25 ts_rank (Fase 6).
 """
 
 import hashlib
@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy import text
 
 from src.connectors.base import (
     Connector,
@@ -30,7 +31,7 @@ from src.connectors.base import (
     WebhookVerification,
 )
 from src.connectors.crypto import decrypt_credentials, encrypt_credentials
-from src.connectors.models import ConnectorConfig, ConnectorDef, Product
+from src.connectors.models import ConnectorConfig, ConnectorDef, Order, Product
 from src.db.session import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -268,15 +269,74 @@ class WooCommerceConnector(Connector):
     # ── sync_incremental (Fase 6) ─────────────────────────────────────────────
 
     def sync_incremental(self, since: datetime) -> SyncResult:
+        """Sincroniza productos modificados después de ``since``.
+
+        Usa el parámetro ``modified_after`` de la WC REST API v3.
+        Actualiza ``last_incremental_sync_at`` en ConnectorConfig.
+        """
         started_at = datetime.now(timezone.utc)
+        stats = {"processed": 0, "created": 0, "updated": 0, "deleted": 0}
+        errors: list[str] = []
+
+        since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+        try:
+            page = 1
+            with self._build_client() as client:
+                while True:
+                    try:
+                        resp = client.get(
+                            "/wp-json/wc/v3/products",
+                            params={
+                                "modified_after": since_iso,
+                                "per_page": _PAGE_SIZE,
+                                "page": page,
+                                "orderby": "modified",
+                                "order": "asc",
+                            },
+                        )
+                        resp.raise_for_status()
+                    except httpx.HTTPError as exc:
+                        errors.append(f"Página {page}: {exc}")
+                        break
+
+                    items = resp.json()
+                    if not items:
+                        break
+
+                    for raw_product in items:
+                        try:
+                            self._upsert_product(raw_product, stats)
+                        except Exception as exc:
+                            errors.append(f"Producto {raw_product.get('id')}: {exc}")
+
+                    stats["processed"] += len(items)
+                    total_pages = int(resp.headers.get("X-WP-TotalPages", 1))
+                    if page >= total_pages:
+                        break
+                    page += 1
+
+        except Exception as exc:
+            errors.append(f"Error fatal en sync_incremental: {exc}")
+            logger.exception("sync_incremental WooCommerce falló")
+        else:
+            with self._get_db() as db:
+                config = db.get(ConnectorConfig, self.config_id)
+                if config:
+                    config.last_incremental_sync_at = datetime.now(timezone.utc)
+                    config.last_error = None
+                    if self._db_session is None:
+                        db.commit()
+
+        finished_at = datetime.now(timezone.utc)
         return SyncResult(
-            items_processed=0,
-            items_created=0,
-            items_updated=0,
-            items_deleted=0,
-            errors=["sync_incremental no implementado aún (Fase 6)"],
+            items_processed=stats["processed"],
+            items_created=stats["created"],
+            items_updated=stats["updated"],
+            items_deleted=stats["deleted"],
+            errors=errors,
             started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
+            finished_at=finished_at,
         )
 
     # ── verify_webhook (Fase 6) ───────────────────────────────────────────────
@@ -309,7 +369,114 @@ class WooCommerceConnector(Connector):
     # ── webhook_handler (Fase 6) ──────────────────────────────────────────────
 
     def webhook_handler(self, payload: dict, headers: dict[str, str]) -> None:
-        pass
+        """Despacha por topic; encola re-embedding si cambia nombre/descripción."""
+        topic = headers.get("x-wc-webhook-topic", "").lower()
+
+        if topic in ("product.created", "product.updated"):
+            stats: dict = {"created": 0, "updated": 0}
+            self._upsert_product(payload, stats)
+            product_id = self._get_product_id_by_external(str(payload.get("id", "")))
+            if product_id:
+                try:
+                    from src.connectors.tasks import embed_product_sync
+                    embed_product_sync(product_id, self._db_session)
+                except Exception:
+                    logger.warning(
+                        "embed_product_sync falló para producto %s", product_id, exc_info=True
+                    )
+
+        elif topic == "product.deleted":
+            self._soft_delete_product(str(payload.get("id", "")))
+
+        elif topic in ("order.created", "order.updated"):
+            self._upsert_order(payload)
+
+        else:
+            logger.debug("webhook_handler: topic '%s' ignorado", topic)
+
+    def _get_product_id_by_external(self, external_id: str) -> uuid.UUID | None:
+        """Retorna el UUID interno del producto dado su external_id."""
+        with self._get_db() as db:
+            product = (
+                db.query(Product)
+                .filter(
+                    Product.tenant_id == self.tenant_id,
+                    Product.connector_config_id == self.config_id,
+                    Product.external_id == external_id,
+                )
+                .first()
+            )
+            return product.id if product else None
+
+    def _soft_delete_product(self, external_id: str) -> None:
+        """Marca el producto como eliminado (soft-delete)."""
+        with self._get_db() as db:
+            product = (
+                db.query(Product)
+                .filter(
+                    Product.tenant_id == self.tenant_id,
+                    Product.connector_config_id == self.config_id,
+                    Product.external_id == external_id,
+                )
+                .first()
+            )
+            if product:
+                product.deleted_at = datetime.now(timezone.utc)
+                if self._db_session is None:
+                    db.commit()
+                else:
+                    db.flush()
+
+    def _upsert_order(self, raw: dict) -> None:
+        """Crea o actualiza un pedido en la tabla ``orders``."""
+        external_id = str(raw.get("id", ""))
+        if not external_id or external_id == "0":
+            logger.warning("_upsert_order: payload sin id válido")
+            return
+
+        placed_at: datetime | None = None
+        date_created = raw.get("date_created") or raw.get("date_created_gmt")
+        if date_created:
+            try:
+                placed_at = datetime.fromisoformat(date_created.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+
+        with self._get_db() as db:
+            existing = (
+                db.query(Order)
+                .filter(
+                    Order.tenant_id == self.tenant_id,
+                    Order.connector_config_id == self.config_id,
+                    Order.external_id == external_id,
+                )
+                .first()
+            )
+            if existing is None:
+                order = Order(
+                    id=uuid.uuid4(),
+                    tenant_id=self.tenant_id,
+                    connector_config_id=self.config_id,
+                    external_id=external_id,
+                    status=raw.get("status"),
+                    total=_to_decimal(raw.get("total")),
+                    currency=raw.get("currency"),
+                    placed_at=placed_at,
+                    raw=raw,
+                )
+                db.add(order)
+            else:
+                existing.status = raw.get("status", existing.status)
+                existing.total = _to_decimal(raw.get("total")) or existing.total
+                existing.currency = raw.get("currency", existing.currency)
+                existing.placed_at = placed_at or existing.placed_at
+                existing.raw = raw
+                existing.updated_at = datetime.now(timezone.utc)
+
+            if self._db_session is None:
+                db.commit()
+            else:
+                db.flush()
 
     # ── expose_tools ──────────────────────────────────────────────────────────
 
@@ -384,45 +551,35 @@ class WooCommerceConnector(Connector):
         top_k: int = 10,
         filters: dict | None = None,
     ) -> list[SearchResult]:
-        """Búsqueda full-text sobre productos en BD local."""
-        results: list[SearchResult] = []
+        """Búsqueda híbrida: pgvector cosine + BM25 ts_rank con fusión RRF.
+
+        Si la búsqueda semántica falla (sin API key, sin embeddings) degrada
+        a BM25 puro. Si BM25 no encuentra nada (search_tsv no poblada o query
+        sin tokens) usa ILIKE como último recurso.
+        """
+        candidates = top_k * 2 if top_k * 2 <= 20 else 20
         with self._get_db() as db:
-            q = (
-                db.query(Product)
-                .filter(
-                    Product.tenant_id == self.tenant_id,
-                    Product.connector_config_id == self.config_id,
-                    Product.deleted_at.is_(None),
+            sem_rows: list[dict] = []
+            try:
+                from src.knowledge.embeddings import get_query_embedding
+                query_vec = get_query_embedding(query)
+                sem_rows = _semantic_search_products(
+                    query_vec, self.tenant_id, self.config_id, candidates, db
                 )
-                .filter(
-                    Product.name.ilike(f"%{query}%")
-                    | Product.description_short.ilike(f"%{query}%")
-                    | Product.sku.ilike(f"%{query}%"),
-                )
-                .limit(top_k)
-                .all()
+            except Exception:
+                logger.debug("Búsqueda semántica de productos no disponible", exc_info=True)
+
+            bm25_rows = _bm25_search_products(
+                query, self.tenant_id, self.config_id, candidates, db
             )
 
-            for p in q:
-                results.append(
-                    SearchResult(
-                        id=str(p.id),
-                        title=p.name,
-                        snippet=p.description_short or "",
-                        url=p.url,
-                        score=1.0,
-                        metadata={
-                            "sku": p.sku,
-                            "external_id": p.external_id,
-                            "price_regular": float(p.price_regular) if p.price_regular else None,
-                            "price_sale": float(p.price_sale) if p.price_sale else None,
-                            "currency": p.currency,
-                            "stock_quantity": p.stock_quantity,
-                            "stock_status": p.stock_status,
-                        },
-                    )
+            if not sem_rows and not bm25_rows:
+                bm25_rows = _ilike_search_products(
+                    query, self.tenant_id, self.config_id, top_k, db
                 )
-        return results
+
+            merged = _rrf_merge_products(sem_rows, bm25_rows, top_k)
+            return merged
 
 
 # ── Helpers de mapeo ──────────────────────────────────────────────────────────
@@ -487,6 +644,191 @@ def _product_text(p: dict) -> str:
         if name:
             parts.append(f"{name}: {options}")
     return " ".join(s for s in parts if s).strip()
+
+
+_RRF_K = 60
+
+
+def _semantic_search_products(
+    query_vec: list[float],
+    tenant_id: uuid.UUID,
+    config_id: uuid.UUID,
+    limit: int,
+    db,
+) -> list[dict]:
+    """Búsqueda por similitud coseno sobre products.embedding."""
+    sql = text("""
+        SELECT
+            id::text,
+            name,
+            description_short,
+            sku,
+            url,
+            external_id,
+            price_regular,
+            price_sale,
+            currency,
+            stock_quantity,
+            stock_status,
+            1 - (embedding <=> CAST(:query_vec AS vector)) AS score
+        FROM products
+        WHERE tenant_id = :tenant_id
+          AND connector_config_id = :config_id
+          AND deleted_at IS NULL
+          AND embedding IS NOT NULL
+        ORDER BY embedding <=> CAST(:query_vec AS vector)
+        LIMIT :limit
+    """)
+    rows = db.execute(sql, {
+        "query_vec": str(query_vec),
+        "tenant_id": str(tenant_id),
+        "config_id": str(config_id),
+        "limit": limit,
+    }).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def _bm25_search_products(
+    query: str,
+    tenant_id: uuid.UUID,
+    config_id: uuid.UUID,
+    limit: int,
+    db,
+) -> list[dict]:
+    """Búsqueda BM25 usando la columna search_tsv generada."""
+    try:
+        sql = text("""
+            SELECT
+                id::text,
+                name,
+                description_short,
+                sku,
+                url,
+                external_id,
+                price_regular,
+                price_sale,
+                currency,
+                stock_quantity,
+                stock_status,
+                ts_rank(search_tsv, plainto_tsquery('spanish', :query)) AS score
+            FROM products
+            WHERE tenant_id = :tenant_id
+              AND connector_config_id = :config_id
+              AND deleted_at IS NULL
+              AND search_tsv @@ plainto_tsquery('spanish', :query)
+            ORDER BY score DESC
+            LIMIT :limit
+        """)
+        rows = db.execute(sql, {
+            "query": query,
+            "tenant_id": str(tenant_id),
+            "config_id": str(config_id),
+            "limit": limit,
+        }).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    except Exception:
+        logger.debug("BM25 products falló (search_tsv no disponible?)", exc_info=True)
+        return []
+
+
+def _ilike_search_products(
+    query: str,
+    tenant_id: uuid.UUID,
+    config_id: uuid.UUID,
+    limit: int,
+    db,
+) -> list[dict]:
+    """Fallback ILIKE cuando BM25 y semántica no están disponibles."""
+    rows = (
+        db.query(Product)
+        .filter(
+            Product.tenant_id == tenant_id,
+            Product.connector_config_id == config_id,
+            Product.deleted_at.is_(None),
+            Product.name.ilike(f"%{query}%")
+            | Product.description_short.ilike(f"%{query}%")
+            | Product.sku.ilike(f"%{query}%"),
+        )
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "name": r.name,
+            "description_short": r.description_short or "",
+            "sku": r.sku,
+            "url": r.url,
+            "external_id": r.external_id,
+            "price_regular": float(r.price_regular) if r.price_regular else None,
+            "price_sale": float(r.price_sale) if r.price_sale else None,
+            "currency": r.currency,
+            "stock_quantity": r.stock_quantity,
+            "stock_status": r.stock_status,
+            "score": 0.5,
+        }
+        for r in rows
+    ]
+
+
+def _row_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description_short": row.description_short or "",
+        "sku": row.sku,
+        "url": row.url,
+        "external_id": row.external_id,
+        "price_regular": float(row.price_regular) if row.price_regular else None,
+        "price_sale": float(row.price_sale) if row.price_sale else None,
+        "currency": row.currency,
+        "stock_quantity": row.stock_quantity,
+        "stock_status": row.stock_status,
+        "score": float(row.score),
+    }
+
+
+def _rrf_merge_products(
+    sem: list[dict],
+    bm25: list[dict],
+    top_k: int,
+) -> list[SearchResult]:
+    scores: dict[str, float] = {}
+    index: dict[str, dict] = {}
+
+    for rank, item in enumerate(sem):
+        pid = item["id"]
+        scores[pid] = scores.get(pid, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        index[pid] = item
+
+    for rank, item in enumerate(bm25):
+        pid = item["id"]
+        scores[pid] = scores.get(pid, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        index[pid] = item
+
+    sorted_ids = sorted(scores, key=lambda k: scores[k], reverse=True)[:top_k]
+    results = []
+    for pid in sorted_ids:
+        p = index[pid]
+        results.append(
+            SearchResult(
+                id=pid,
+                title=p["name"],
+                snippet=p["description_short"],
+                url=p["url"],
+                score=scores[pid],
+                metadata={
+                    "sku": p["sku"],
+                    "external_id": p["external_id"],
+                    "price_regular": p["price_regular"],
+                    "price_sale": p["price_sale"],
+                    "currency": p["currency"],
+                    "stock_quantity": p["stock_quantity"],
+                    "stock_status": p["stock_status"],
+                },
+            )
+        )
+    return results
 
 
 def get_or_create_connector_def(db, name: str, kind: str, version: str) -> ConnectorDef:

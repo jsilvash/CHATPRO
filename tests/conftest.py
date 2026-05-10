@@ -52,12 +52,23 @@ def setup_db():
     Base.metadata.drop_all(_engine)
     Base.metadata.create_all(_engine)
 
-    # La columna content_tsv (GENERATED ALWAYS) está en la migración pero no en el
-    # modelo ORM. create_all() no la crea, así que la agregamos manualmente aquí.
+    # Columnas GENERATED ALWAYS no las crea create_all(); se agregan manualmente.
     with _engine.connect() as conn:
+        # kb_chunks.content_tsv (Fase 9)
         conn.execute(text(
             "ALTER TABLE kb_chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector "
             "GENERATED ALWAYS AS (to_tsvector('spanish', coalesce(content, ''))) STORED"
+        ))
+        # products.search_tsv (Fase 6)
+        conn.execute(text(
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS search_tsv tsvector "
+            "GENERATED ALWAYS AS ("
+            "  to_tsvector('spanish',"
+            "    coalesce(name,'')||' '||"
+            "    coalesce(description_short,'')||' '||"
+            "    coalesce(description_long,'')"
+            "  )"
+            ") STORED"
         ))
         conn.commit()
 
