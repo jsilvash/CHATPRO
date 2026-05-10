@@ -237,35 +237,64 @@ Contexto:
     - Fallos pre-existentes conocidos (NO causados por Fase 22):
         * Ninguno conocido en este momento.
 
-- Opciones a implementar en Fase 23 (decidir con el usuario al arrancar):
+- Implementar las 4 opciones en esta sesión, en orden A → B → C → D:
 
     A. WebSocket para inbox en tiempo real:
-       - Endpoint WebSocket /ws/inbox/{conversation_id} (autenticado con token en query param).
-       - Broadcast de nuevos mensajes a clientes conectados al abrir una conversación.
-       - State management en memoria (dict conversation_id → set[WebSocket]).
-       - Tests en tests/test_fase23_ws.py.
+       - Endpoint WebSocket /ws/inbox/{conversation_id} autenticado con token en query param
+         (?token=<jwt>). Si el token es inválido o no corresponde al tenant de la conversación → cerrar con 1008.
+       - ConnectionManager in-memory: dict[UUID, set[WebSocket]] (conversation_id → clientes).
+         Al recibir un WaMessage outbound del bot o del agente, broadcast a todos los clientes
+         conectados a esa conversation_id.
+       - Integrar el broadcast en service._persist_outbound() y en inbox/api.py::reply().
+       - Implementar en src/messaging/ws_manager.py (ConnectionManager) e incluir el router
+         en src/main.py.
+       - Tests en tests/test_fase23_ws.py: connect OK, connect sin token → 1008, connect con
+         token de otro tenant → 1008, broadcast llega a todos los conectados, disconnect limpia el set.
 
     B. Export de datos del tenant (GDPR):
-       - POST /v1/tenants/me/export → dispara job Celery que empaqueta:
-           contacts, wa_messages, orders, contact_facts en ZIP (CSV por tabla).
-       - GET /v1/tenants/me/export/{job_id}/status → estado del job (queued/done/error).
-       - GET /v1/tenants/me/export/{job_id}/download → signed URL a S3 del ZIP.
-       - Tests en tests/test_fase23_export.py.
+       - POST /v1/tenants/me/export → crea registro ExportJob (tabla nueva, migración 0018) con
+         status="queued" y dispara tarea Celery export_tenant_data(job_id).
+       - ExportJob: id UUID, tenant_id, status (queued/running/done/error), error TEXT,
+         storage_uri TEXT, created_at, finished_at.
+       - Tarea Celery: exporta contacts, wa_messages, orders, contact_facts a CSV individuales,
+         los empaqueta en ZIP en memoria, lo sube a S3/MinIO con path
+         exports/{tenant_id}/{job_id}.zip y actualiza status + storage_uri.
+       - GET /v1/tenants/me/export/{job_id}/status → {status, created_at, finished_at, error}.
+       - GET /v1/tenants/me/export/{job_id}/download → signed URL (TTL 15 min) al ZIP en S3.
+         Si status != "done" → 400. Si storage_uri vacío → 404.
+       - Aislamiento: tenant B no puede ver ni descargar export de tenant A.
+       - Tests en tests/test_fase23_export.py: crear job, status queued/done/error, download URL,
+         aislamiento, task mock (no S3 real).
 
     C. Soporte multi-idioma en personas (i18n):
-       - Agregar campos `locale_secondary TEXT[]` y `auto_detect_locale BOOLEAN` a Persona.
-       - Migración 0018.
-       - Prompt builder: si auto_detect_locale=True, incluir instrucción de detectar el idioma
-         del usuario y responder en ese idioma.
-       - Tests en tests/test_fase23_i18n.py.
+       - Agregar a Persona (migración 0019):
+           locale_secondary = Column(ARRAY(Text), default=[])  — ej: ["en", "pt"]
+           auto_detect_locale = Column(Boolean, default=False)
+       - prompt_builder.build_system_prompt(): si auto_detect_locale=True, añadir al final del
+         system prompt el bloque:
+           "IDIOMA: Detectá el idioma del último mensaje del usuario y respondé en ese mismo idioma.
+            Idiomas soportados: {locale_primary} + {locale_secondary_joined}.
+            Si el idioma no está en la lista, respondé en {locale_primary}."
+       - API CRUD de personas (src/agent/api.py): exponer locale_secondary y auto_detect_locale
+         en PersonaOut, PersonaCreate y PersonaUpdate.
+       - Tests en tests/test_fase23_i18n.py: prompt incluye bloque idioma si auto_detect=True,
+         no lo incluye si False, locale_secondary se serializa correctamente, CRUD actualiza campos.
 
-    D. Dashboard de métricas en tiempo real via SSE:
-       - GET /v1/metrics/stream → Server-Sent Events con contadores actualizados cada 30s:
-           messages_in, messages_out, conversations_active, llm_cost_today.
-       - Autenticado con JWT.
-       - Tests básicos de SSE en tests/test_fase23_sse.py.
+    D. Endpoint de métricas en tiempo real via SSE:
+       - GET /v1/metrics/stream → Server-Sent Events (text/event-stream). Autenticado con JWT
+         (header Authorization o query param ?token=<jwt>).
+       - Cada 30 segundos (configurable: METRICS_STREAM_INTERVAL_S: int = 30 en Settings)
+         emite un evento con JSON:
+           {messages_in_today, messages_out_today, conversations_active,
+            llm_cost_cents_today, timestamp}
+         Calculado con queries COUNT/SUM sobre usage_metrics y wa_conversations.
+       - Al conectar, emite el primer evento inmediatamente (sin esperar 30s).
+       - Si el cliente desconecta (asyncio.CancelledError), cierra silenciosamente.
+       - Implementar en src/billing/api.py (o nuevo src/metrics/api.py si es más limpio).
+       - Tests en tests/test_fase23_sse.py: respuesta es text/event-stream, primer evento
+         contiene los campos esperados, 401 sin token, aislamiento tenant.
 
-- NO tocar: src/knowledge/, src/billing/, src/inbox/ salvo indicación.
+- NO tocar: src/knowledge/ salvo indicación.
 - Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 24.
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
