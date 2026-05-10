@@ -146,4 +146,17 @@ def build_system_prompt(
             lines.append("")
             lines.append(memory_block)
 
+    # Bloque de detección de idioma (Fase 23C).
+    if getattr(persona, "auto_detect_locale", False):
+        secondary = getattr(persona, "locale_secondary", []) or []
+        primary = persona.locale or "es"
+        all_locales = [primary] + [loc for loc in secondary if loc != primary]
+        locales_joined = ", ".join(all_locales)
+        lines.append("")
+        lines.append(
+            f"IDIOMA: Detectá el idioma del último mensaje del usuario y respondé en ese mismo idioma. "
+            f"Idiomas soportados: {locales_joined}. "
+            f"Si el idioma no está en la lista, respondé en {primary}."
+        )
+
     return "\n".join(lines).strip()

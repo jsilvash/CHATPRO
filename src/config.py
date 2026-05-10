@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     rate_limit_messages: int = 10
     rate_limit_window_seconds: int = 60
 
+    # S3 / MinIO para exports GDPR (Fase 23B)
+    s3_bucket_name: str = "chatpro-exports"
+    s3_endpoint_url: str = ""          # vacío = AWS nativo; MinIO: "http://minio:9000"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_region: str = "us-east-1"
+
+    # Intervalo de emisión de SSE de métricas en segundos (Fase 23D)
+    metrics_stream_interval_s: int = 30
+
 
 @lru_cache
 def get_settings() -> Settings:

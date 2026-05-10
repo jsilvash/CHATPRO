@@ -41,6 +41,8 @@ class PersonaCreate(BaseModel):
     out_of_hours_message: str = ""
     business_hours_json: dict = {}
     model_id: str = "claude-sonnet-4-6"
+    locale_secondary: list[str] = []
+    auto_detect_locale: bool = False
 
 
 class PersonaUpdate(BaseModel):
@@ -52,6 +54,8 @@ class PersonaUpdate(BaseModel):
     out_of_hours_message: str | None = None
     business_hours_json: dict | None = None
     model_id: str | None = None
+    locale_secondary: list[str] | None = None
+    auto_detect_locale: bool | None = None
 
 
 class PersonaResponse(BaseModel):
@@ -65,6 +69,8 @@ class PersonaResponse(BaseModel):
     out_of_hours_message: str
     business_hours_json: dict
     model_id: str
+    locale_secondary: list[str] = []
+    auto_detect_locale: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -106,6 +112,8 @@ def _persona_to_response(p: Persona) -> PersonaResponse:
         out_of_hours_message=p.out_of_hours_message or "",
         business_hours_json=p.business_hours_json or {},
         model_id=p.model_id or "claude-sonnet-4-6",
+        locale_secondary=getattr(p, "locale_secondary", None) or [],
+        auto_detect_locale=getattr(p, "auto_detect_locale", False) or False,
     )
 
 
@@ -131,6 +139,8 @@ def create_persona(
         out_of_hours_message=payload.out_of_hours_message,
         business_hours_json=payload.business_hours_json,
         model_id=payload.model_id,
+        locale_secondary=payload.locale_secondary,
+        auto_detect_locale=payload.auto_detect_locale,
     )
     db.add(persona)
     db.commit()

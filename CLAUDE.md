@@ -38,7 +38,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 19 | Connector API REST completa (CRUD + PATCH + webhook-info + sync-incr + orders) | ✅ Mergeada a main |
 | 20 | historial_pedidos_contacto real (orders reales + match email/phone + Shopify) | ✅ Mergeada a main |
 | 21 | Webhooks salientes conector + panel métricas + anti-hallucination logging | ✅ Mergeada a main |
-| 22 | Fix pre-existentes + rate limit + search semántico + hallucination_flag | ✅ PR abierto |
+| 22 | Fix pre-existentes + rate limit + search semántico + hallucination_flag | ✅ Mergeada a main |
+| 23 | WebSocket inbox + Export GDPR + i18n personas + métricas SSE | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -210,6 +211,79 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Rate limiting sliding window | `src/agent/rate_limiter.py`: ventana in-memory (collections.deque) por `(tenant_id, wa_contact_phone)`. Fallback Redis si `REDIS_URL` configurado. Límites en Settings: `RATE_LIMIT_MESSAGES=10`, `RATE_LIMIT_WINDOW_SECONDS=60`. Inyectado al inicio de `respond()` — retorno silencioso si superado. | Fase 22 |
 | Search endpoint público | `GET /v1/connector-configs/{id}/search?q=<query>&max_results=5` llama `connector.search()` existente. Schemas `SearchResultOut` y `SearchResultsOut` en `src/connectors/api.py`. Requiere auth, aislamiento por tenant_id. | Fase 22 |
 | hallucination_flag persistido | `WaMessage.hallucination_flag Boolean default False` (migración 0017). `_run_agent_loop()` retorna 4-tupla con el flag. `_persist_outbound()` acepta y persiste el flag en el mensaje de salida. | Fase 22 |
+| WebSocket inbox tiempo real | `src/messaging/ws_manager.py`: ConnectionManager con dict{conv_id→set[WS]}. Broadcast async + `broadcast_from_sync()` via `run_coroutine_threadsafe`. Endpoint `/ws/inbox/{conv_id}?token=<jwt>` autenticado. Integrado en `_persist_outbound()` y en `inbox/api.py::reply_conversation()`. `set_main_loop()` en lifespan startup. | Fase 23 |
+| ExportJob GDPR | `src/billing/models.ExportJob` (migración 0018): id/tenant_id/status/error/storage_uri/created_at/finished_at. Tarea Celery `billing.export_tenant_data(job_id)`: exporta contacts+wa_messages+orders+contact_facts a CSV, ZIP en memoria, sube a S3/MinIO. Endpoints: POST /v1/tenants/me/export → 202, GET status, GET download (URL firmada TTL 15min). Aislamiento por tenant_id. `boto3>=1.35.0` en deps. | Fase 23 |
+| i18n en Persona | `Persona.locale_secondary ARRAY(Text) default []` + `auto_detect_locale Boolean default False` (migración 0019). `build_system_prompt()` añade bloque IDIOMA al final si `auto_detect_locale=True`. CRUD expone campos en PersonaCreate/PersonaUpdate/PersonaResponse. | Fase 23 |
+| Métricas SSE | `GET /v1/metrics/stream` → `text/event-stream`. Auth flexible: Bearer header O `?token=<jwt>` (helper `_resolve_sse_user`). Emite primer evento inmediatamente; luego cada `METRICS_STREAM_INTERVAL_S` seg (Settings, default 30). Payload: messages_in_today, messages_out_today, conversations_active, llm_cost_cents_today, timestamp. Queries sobre `usage_metrics` y `wa_conversations`. CancelledError cierra silenciosamente. | Fase 23 |
+| S3 config en Settings | `s3_bucket_name`, `s3_endpoint_url`, `s3_access_key`, `s3_secret_key`, `s3_region` en Settings. `src/billing/storage.py`: `upload_bytes()` + `generate_presigned_url()`. Abstracción mockeable en tests. | Fase 23 |
+| metrics_stream_interval_s | `METRICS_STREAM_INTERVAL_S: int = 30` en Settings. Controla el intervalo de emisión SSE. | Fase 23 |
+
+---
+
+## Prompt de arranque — Fase 24 (siguiente prioridad del backlog)
+
+```
+Retomo Fase 24 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Contexto:
+- Fase 23 (WebSocket inbox + Export GDPR + i18n personas + métricas SSE) mergeada a main. PR #18.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase24-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-23 funcionales.
+- Primero: leer SOLO CLAUDE.md. Nada más.
+
+- Estado tras Fase 23:
+    A. WebSocket inbox (/ws/inbox/{conv_id}?token=<jwt>):
+       - ConnectionManager en src/messaging/ws_manager.py. Singleton `manager`.
+       - broadcast_from_sync() usa run_coroutine_threadsafe con loop registrado en lifespan.
+       - Integrado en service._persist_outbound() y inbox/api.py::reply_conversation().
+       - Tests en tests/test_fase23_ws.py (sync + async con mock WebSocket).
+    B. Export GDPR:
+       - ExportJob en billing/models.py. Migración 0018.
+       - Tarea Celery billing.export_tenant_data. src/billing/tasks.py.
+       - Endpoints: POST /v1/tenants/me/export (202), GET status, GET download (URL S3 firmada).
+       - src/billing/storage.py: upload_bytes + generate_presigned_url (mockeable).
+       - Tests en tests/test_fase23_export.py.
+    C. i18n Persona:
+       - locale_secondary (ARRAY Text) + auto_detect_locale (Boolean). Migración 0019.
+       - build_system_prompt() inyecta bloque IDIOMA si auto_detect_locale=True.
+       - PersonaCreate/PersonaUpdate/PersonaResponse exponen los nuevos campos.
+       - Tests en tests/test_fase23_i18n.py.
+    D. Métricas SSE:
+       - GET /v1/metrics/stream → text/event-stream. Auth Bearer header O ?token=.
+       - METRICS_STREAM_INTERVAL_S: int = 30 en Settings.
+       - Tests en tests/test_fase23_sse.py.
+    - boto3>=1.35.0 añadido a pyproject.toml.
+    - Fallos pre-existentes conocidos: ninguno conocido en este momento.
+
+- Opciones a implementar en Fase 24 (decidir con el usuario al arrancar):
+
+    A. Notificaciones push outbound vía webhooks para eventos de conversación:
+       - Eventos: conversation.created, conversation.status_changed, message.received, message.sent.
+       - Reutilizar WebhookOut + WebhookDelivery de Fase 10 (src/public_api/).
+       - Inyectar emit_event() en el dispatcher y en service.respond().
+       - Tests en tests/test_fase24_conv_webhooks.py.
+
+    B. Dashboard de métricas por número (WaNumber):
+       - GET /v1/wa-numbers/{id}/metrics → messages_in/out por día, conversations activas,
+         top contacts por volumen. Queries sobre wa_messages y wa_conversations.
+       - Filtro por período (date_from, date_to, default 30 días).
+       - Tests en tests/test_fase24_wa_metrics.py.
+
+    C. Búsqueda full-text de mensajes en inbox:
+       - GET /v1/inbox/search?q=<query>&conversation_id=<uuid>&date_from=...&date_to=...
+       - Usa body_tsv (GIN index ya existente en wa_messages).
+       - Devuelve lista de mensajes con contexto (±2 mensajes antes/después).
+       - Tests en tests/test_fase24_inbox_search.py.
+
+    D. Resumen automático de conversación al cerrar:
+       - Al llamar POST /v1/inbox/{conv_id}/close, si la conversación tiene >5 turnos,
+         disparar tarea Celery summarize_on_close(conv_id) que genera y persiste
+         WaConversation.ai_summary con Claude Haiku.
+       - Tests en tests/test_fase24_summary_on_close.py.
+
+- NO tocar: src/knowledge/ salvo indicación.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 25.
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 

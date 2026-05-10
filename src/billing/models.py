@@ -91,3 +91,41 @@ class AuditLog(Base):
         sa.Index("ix_audit_log_tenant_created", "tenant_id", "created_at"),
         sa.Index("ix_audit_log_tenant_target", "tenant_id", "target_type", "target_id"),
     )
+
+
+class ExportJob(Base):
+    """Job de exportación de datos del tenant (GDPR — Fase 23B).
+
+    Ciclo: queued → running → done | error.
+    storage_uri apunta al ZIP en S3/MinIO cuando el job termina con éxito.
+    """
+
+    __tablename__ = "export_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # queued | running | done | error
+    status: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default="queued"
+    )
+    error: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    storage_uri: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        sa.Index("ix_export_jobs_tenant", "tenant_id"),
+    )

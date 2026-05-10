@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from src.config import get_settings
 from src.connectors.shopify.webhook import router as shopify_webhook_router
 from src.connectors.woocommerce.webhook import router as woo_webhook_router
 from src.messaging.webhook import router as waha_webhook_router
+from src.messaging.ws_router import router as ws_router
 from src.tenancy.context import _tenant_id_var
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Registra el event loop para broadcast WS desde código sync (Fase 23A).
+    from src.messaging.ws_manager import set_main_loop
+    set_main_loop(asyncio.get_event_loop())
+
     # Reaplica webhooks WAHA en cada arranque (WAHA no los persiste).
     try:
         from src.messaging.waha_client import ensure_waha_webhooks
@@ -78,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(waha_webhook_router)
     app.include_router(woo_webhook_router)
     app.include_router(shopify_webhook_router)
+    app.include_router(ws_router)
 
     @app.get("/health")
     def health():
