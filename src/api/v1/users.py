@@ -298,6 +298,80 @@ def get_user_stats(
     )
 
 
+# ── Deactivate user (Fase 28B) ────────────────────────────────────────────────
+# Declarado ANTES de /{user_id} (GET) para evitar conflictos de routing.
+
+
+class DeactivateUserOut(BaseModel):
+    deactivated_user_id: uuid.UUID
+    reassigned_conversations: int
+    new_assignee_id: uuid.UUID | None
+
+
+@router.patch("/{user_id}/deactivate", response_model=DeactivateUserOut)
+def deactivate_user(
+    user_id: uuid.UUID,
+    current_user: User = Depends(require_role("owner", "admin")),
+    db: Session = Depends(get_db),
+) -> DeactivateUserOut:
+    """Desactiva un usuario y reasigna sus conversaciones activas.
+
+    - Solo admin/owner puede ejecutar este endpoint.
+    - No permite desactivarse a sí mismo (422).
+    - Reasigna las convs activas al agente con menos carga; si no hay, quedan sin asignar.
+    - user_id debe pertenecer al mismo tenant, sino 404.
+    """
+    tenant_id = get_current_tenant_id()
+
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No puedes desactivarte a ti mismo",
+        )
+
+    with bypass_tenant_filter():
+        target = db.query(User).filter(
+            User.id == user_id,
+            User.tenant_id == tenant_id,
+        ).first()
+
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
+
+    target.is_active = False
+
+    # Buscar el agente con menos carga (excluye al usuario que se desactiva).
+    from src.agent.service import _find_agent_with_least_load
+
+    # Primero commit del is_active para que el lookup excluya al usuario desactivado.
+    db.flush()
+
+    new_assignee_id = _find_agent_with_least_load(db, tenant_id)
+
+    # Reasignar conversaciones activas del usuario desactivado.
+    with bypass_tenant_filter():
+        active_convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.tenant_id == tenant_id,
+                WaConversation.assigned_user_id == user_id,
+                WaConversation.status.in_(["agent", "waiting_agent"]),
+            )
+            .all()
+        )
+
+    for conv in active_convs:
+        conv.assigned_user_id = new_assignee_id
+
+    db.commit()
+
+    return DeactivateUserOut(
+        deactivated_user_id=user_id,
+        reassigned_conversations=len(active_convs),
+        new_assignee_id=new_assignee_id,
+    )
+
+
 @router.get("/{user_id}", response_model=UserResponse)
 def get_user(
     user_id: uuid.UUID,

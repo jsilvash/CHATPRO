@@ -1,6 +1,7 @@
 """API REST de contactos y hechos (Fase 4).
 
 Endpoints:
+- GET    /v1/contacts/search                   — búsqueda por nombre/teléfono (Fase 28D)
 - GET    /v1/contacts                          — lista contactos del tenant
 - GET    /v1/contacts/{id}                     — detalle de un contacto
 - PATCH  /v1/contacts/{id}                     — edita datos base
@@ -12,10 +13,12 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_user
@@ -23,6 +26,7 @@ from src.contacts.models import Contact, ContactFact
 from src.db.models import User
 from src.db.session import get_db
 from src.tenancy.context import bypass_tenant_filter
+from src.wa.models import WaConversation
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
 
@@ -82,6 +86,20 @@ class FactUpsert(BaseModel):
     value_type: str = "text"
 
 
+# ── Schema búsqueda de contactos (Fase 28D) ──────────────────────────────────
+
+
+class ContactSearchOut(BaseModel):
+    id: uuid.UUID
+    phone_e164: str
+    display_name: str | None
+    email: str | None
+    created_at: datetime
+    conversations_count: int
+
+    model_config = {"from_attributes": True}
+
+
 # ────────────────────────────────────────────────────────────
 # Helpers
 # ────────────────────────────────────────────────────────────
@@ -125,6 +143,65 @@ def _get_fact_or_404(
 # ────────────────────────────────────────────────────────────
 # Endpoints
 # ────────────────────────────────────────────────────────────
+
+
+# ── Búsqueda de contactos (Fase 28D) — declarado ANTES de /{contact_id} ──────
+
+
+@router.get("/search", response_model=list[ContactSearchOut])
+def search_contacts(
+    q: str = Query(..., min_length=1, description="Texto a buscar (teléfono o nombre)"),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[ContactSearchOut]:
+    """Busca contactos por teléfono o nombre (ILIKE) en el tenant actual.
+
+    Devuelve [{id, phone_e164, display_name, email, created_at, conversations_count}].
+    """
+    tenant_id = current_user.tenant_id
+    like = f"%{q}%"
+
+    with bypass_tenant_filter():
+        contacts = (
+            db.query(Contact)
+            .filter(
+                Contact.tenant_id == tenant_id,
+                Contact.phone_e164.ilike(like) | Contact.display_name.ilike(like),
+            )
+            .order_by(Contact.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        if not contacts:
+            return []
+
+        contact_ids = [c.id for c in contacts]
+        conv_counts: dict[uuid.UUID, int] = dict(
+            db.query(
+                WaConversation.contact_id,
+                func.count(WaConversation.id),
+            )
+            .filter(
+                WaConversation.tenant_id == tenant_id,
+                WaConversation.contact_id.in_(contact_ids),
+            )
+            .group_by(WaConversation.contact_id)
+            .all()
+        )
+
+    return [
+        ContactSearchOut(
+            id=c.id,
+            phone_e164=c.phone_e164,
+            display_name=c.display_name,
+            email=c.email,
+            created_at=c.created_at,
+            conversations_count=conv_counts.get(c.id, 0),
+        )
+        for c in contacts
+    ]
 
 
 @router.get("", response_model=list[ContactOut])
