@@ -26,7 +26,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main |
 | 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main |
 | 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main |
-| 6 | Sync incremental WooCommerce + embeddings | **🔜 Próxima** |
+| 6 | Sync incremental WooCommerce + embeddings | ✅ PR #11 abierto |
 | 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main |
 | 8 | Inbox + handoff humano | ✅ Mergeada a main |
 | 9 | RAG genérico (PDF/URL) | ✅ Mergeada a main |
@@ -34,6 +34,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 11 | Billing + métricas + cuotas | ✅ Mergeada a main |
 | 12 | Shopify connector (validación interfaz) | Pendiente |
 | 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ PR #10 abierto |
+| 17 | Sync incremental WooCommerce + embeddings (Fase 6) | ✅ PR #11 abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -79,7 +80,8 @@ src/
 ├── utils/               — phone (normalize)
 ├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
 ├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
-│   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
+│   ├── tasks.py         — embed_product_sync helper (Fase 6)
+│   └── woocommerce/     — WooCommerceConnector + webhook.py (POST /webhooks/woo/) + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer, tool_runner (Fase 7)
 ├── inbox/               — (Fase 8) HandoffEvent + API REST /inbox (list/get/take/reply/close)
 ├── knowledge/           — (Fase 9) KbDocument/KbChunk, ingestor PDF/URL, búsqueda RAG híbrida, API /knowledge
@@ -103,7 +105,8 @@ tests/
 ├── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
 ├── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
 ├── test_knowledge.py        — chunking, ingestión PDF/URL, búsqueda híbrida, tool agente, API, aislamiento
-└── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
+├── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
+└── test_woo_incremental.py  — HMAC, webhook_handler product/order, embed_product, sync_incremental, búsqueda híbrida, aislamiento
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
@@ -187,27 +190,32 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 
 ---
 
-## Prompt de arranque — Fase 17 (Sync incremental WooCommerce + embeddings de productos)
+## Prompt de arranque — Fase 18 (Shopify connector + validación interfaz)
 
 ```
-Retomo Fase 17 — Sync incremental WooCommerce + embeddings de productos (Fase 6 del plan).
+Retomo Fase 18 — Shopify connector (validación de la interfaz Connector ABC).
 Contexto:
-- Rama activa: crear nueva desde main → claude/woo-incremental-<hash>
-  git fetch origin main && git checkout -b claude/woo-incremental-XXXXX origin/main
-- PR #10 (fase-16 retomo / fixes) fue abierto; esperar merge antes de arrancar, o crear desde PR #10 si ya mergeó.
-- Main contiene Fases 0-5 + 7-11 funcionales. Fase 6 (sync incremental) fue saltada y es la próxima.
-- Primero: leer SOLO CLAUDE.md + WHATSAPP_HUB_PLAN.md §8 (Sincronización WooCommerce).
-- Objetivo Fase 6:
-    1. Endpoint POST /webhooks/woo/{tenant_id}/{config_id} con verificación HMAC X-WC-Webhook-Signature
-    2. Handler para topics: product.created, product.updated, product.deleted, order.created, order.updated
-    3. Migración para product_embeddings (si no existe; revisar 0012_products_vector.py)
-    4. Job Celery embed_product(product_id) — genera embedding de nombre+descripción y guarda en product_embeddings
-    5. WooCommerceConnector.sync_incremental(since) usando /wc/v3/products?modified_after=since
-    6. WooCommerceConnector.search() con búsqueda híbrida pgvector + BM25 sobre product_embeddings + products
-    7. Tests: verificación HMAC, handler product.updated actualiza producto, job embed, búsqueda semántica, aislamiento
-- Archivos clave a leer: src/connectors/woocommerce/connector.py, src/connectors/models.py,
-  alembic/versions/0012_products_vector.py, src/connectors/embeddings.py
-- Fallos previos (ya corregidos en PR #10): ninguno — 342 tests pasan en rama base.
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 18.
-- NO tocar: src/knowledge/, src/billing/, src/public_api/ (fases completas y estables).
+- Rama activa: crear nueva desde main → claude/shopify-connector-<hash>
+  git fetch origin main && git checkout -b claude/shopify-connector-XXXXX origin/main
+- PR #11 (Fase 17 / woo incremental) fue abierto; mergear antes o crear desde PR #11 si ya mergeó.
+- Main contiene Fases 0-11 funcionales + Fase 6 (woo incremental, PR #11).
+- Primero: leer SOLO CLAUDE.md + WHATSAPP_HUB_PLAN.md §7 (interfaz Connector).
+- Objetivo Fase 12 del plan (llamada Fase 18 en la sesión):
+    1. ShopifyConnector implementa los 8 métodos del ABC (configure, test_connection,
+       sync_full, sync_incremental, verify_webhook, webhook_handler, expose_tools, search).
+    2. Credenciales: shop_url + access_token, cifrado AES-GCM igual que WooCommerce.
+    3. sync_full: pagina GET /admin/api/2024-01/products.json con paginación cursor via Link header.
+    4. verify_webhook: HMAC-SHA256 sobre body con X-Shopify-Hmac-Sha256.
+    5. expose_tools: mismos nombres semánticos (buscar_productos, consultar_stock_y_precio).
+    6. search(): usar el mismo patrón híbrido que WooCommerce (BM25 + pgvector + ILIKE fallback).
+    7. Registry: agregar "shopify" → ShopifyConnector.
+    8. Tests: configure, test_connection, sync_full mock, verify_webhook, tools, aislamiento.
+    9. docs/como-agregar-conector.md: checklist completo.
+- Archivos clave a leer:
+    src/connectors/base.py, src/connectors/woocommerce/connector.py (patrón a seguir),
+    src/connectors/registry.py, src/connectors/models.py (Product, Order ya existen).
+- 342+ tests pasan en rama base — NO romper ninguno.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 19.
+- NO tocar: src/knowledge/, src/billing/, src/public_api/, src/connectors/woocommerce/.
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```

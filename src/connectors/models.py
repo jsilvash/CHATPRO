@@ -1,14 +1,17 @@
-"""Modelos SQLAlchemy para conectores y catálogo de productos (Fase 5).
+"""Modelos SQLAlchemy para conectores y catálogo de productos (Fase 5 + 6).
 
 Tablas:
 - ``connector_defs``    — definición de cada tipo de conector (woocommerce, shopify…).
 - ``connector_configs`` — instancia de un conector configurada por un tenant.
 - ``products``          — catálogo sincronizado desde el proveedor.
+- ``orders``            — órdenes recibidas vía webhook (Fase 6).
 """
 
 import uuid
+from datetime import datetime
 
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -120,9 +123,11 @@ class Product(Base, TimestampMixin):
     attributes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     variations: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    deleted_at: Mapped[sa.DateTime | None] = mapped_column(
+    deleted_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    # Columna embedding agregada en migración 0012 (Fase 6: búsqueda semántica).
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
 
     __table_args__ = (
         sa.UniqueConstraint(
@@ -132,4 +137,51 @@ class Product(Base, TimestampMixin):
         sa.Index("ix_products_tenant_sku", "tenant_id", "sku",
                  postgresql_where=sa.text("sku IS NOT NULL")),
         sa.Index("ix_products_tenant_config", "tenant_id", "connector_config_id"),
+    )
+
+
+class Order(Base, TimestampMixin):
+    """Orden de compra recibida vía webhook WooCommerce (Fase 6).
+
+    ``contact_id`` se resuelve a partir de email/teléfono en el billing del pedido.
+    Se deja nullable porque la resolución puede fallar si el contacto no existe aún.
+    """
+
+    __tablename__ = "orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    connector_config_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("connector_configs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("contacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Estado del pedido en WooCommerce: pending|processing|completed|cancelled|refunded…
+    status: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    total: Mapped[float | None] = mapped_column(sa.Numeric(12, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    placed_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tenant_id", "connector_config_id", "external_id",
+            name="uq_orders_tenant_config_external",
+        ),
+        sa.Index("ix_orders_tenant_contact", "tenant_id", "contact_id"),
     )
