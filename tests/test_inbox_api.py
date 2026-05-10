@@ -617,6 +617,7 @@ class TestAutoEscalate:
                 "He llegado al límite de consultas. Un agente humano te ayudará.",
                 {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.001, "model": "claude-sonnet-4-6"},
                 "max_tool_calls",
+                False,
             )
             mock_send.return_value = dispatcher.DispatchResult(
                 success=True, wa_message_id="wa-out-auto-001"
@@ -652,6 +653,7 @@ class TestAutoEscalate:
                 "La consulta superó el límite. Un agente humano te ayudará.",
                 {"input_tokens": 50, "output_tokens": 20, "cost_usd": 0.06, "model": "claude-sonnet-4-6"},
                 "max_cost",
+                False,
             )
             mock_send.return_value = dispatcher.DispatchResult(
                 success=True, wa_message_id="wa-out-auto-002"
@@ -685,6 +687,7 @@ class TestAutoEscalate:
                 "Disculpá, no logro resolverlo desde acá. Te derivo a un humano.",
                 {"input_tokens": 100, "output_tokens": 10, "cost_usd": 0.02, "model": "claude-sonnet-4-6"},
                 "hard_limit",
+                False,
             )
             mock_send.return_value = dispatcher.DispatchResult(
                 success=True, wa_message_id="wa-out-auto-003"
@@ -718,6 +721,7 @@ class TestAutoEscalate:
                 "Claro, te ayudo con tu consulta.",
                 {"input_tokens": 10, "output_tokens": 8, "cost_usd": 0.0005, "model": "claude-sonnet-4-6"},
                 "end_turn",
+                False,
             )
             mock_send.return_value = dispatcher.DispatchResult(
                 success=True, wa_message_id="wa-out-auto-004"
