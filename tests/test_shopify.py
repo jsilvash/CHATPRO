@@ -667,11 +667,12 @@ def test_expose_tools_retorna_esquemas(db, tenant_a):
     connector = _make_connector(db, tenant, config)
 
     tools = connector.expose_tools()
-    assert len(tools) == 2
+    assert len(tools) == 3
 
     nombres = {t.name for t in tools}
     assert "buscar_productos" in nombres
     assert "consultar_stock_y_precio" in nombres
+    assert "historial_pedidos_contacto" in nombres
 
     for tool in tools:
         assert tool.callable_ref.startswith("connectors.shopify.tools:")

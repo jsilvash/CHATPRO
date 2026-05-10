@@ -106,3 +106,32 @@ def consultar_stock_y_precio(
         "stock_status": product.stock_status,
         "url": product.url,
     }
+
+
+def historial_pedidos_contacto(
+    limit: int = 5,
+    *,
+    tenant_id: uuid.UUID,
+    config_id: uuid.UUID,
+    contact_id: uuid.UUID | None = None,
+    contact_email: str | None = None,
+    contact_phone: str | None = None,
+    db=None,
+    **_kwargs,
+) -> dict:
+    """Retorna los últimos pedidos del contacto buscando por email o teléfono.
+
+    Comparte la tabla ``orders`` con WooCommerce — el conector activo determina
+    desde qué config_id vienen las órdenes, pero el match es por email/teléfono.
+    """
+    # Reutilizar la implementación de WooCommerce (misma tabla orders).
+    from src.connectors.woocommerce.tools import historial_pedidos_contacto as _impl
+    return _impl(
+        limit,
+        tenant_id=tenant_id,
+        config_id=config_id,
+        contact_id=contact_id,
+        contact_email=contact_email,
+        contact_phone=contact_phone,
+        db=db,
+    )

@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from contextlib import contextmanager
 
-from src.connectors.models import Product
+from src.connectors.models import Order, Product
 from src.db.session import get_db_session
 
 
@@ -114,21 +114,86 @@ def historial_pedidos_contacto(
     *,
     tenant_id: uuid.UUID,
     config_id: uuid.UUID,
+    contact_id: uuid.UUID | None = None,
     contact_email: str | None = None,
     contact_phone: str | None = None,
     db=None,
     **_kwargs,
 ) -> dict:
-    """Retorna historial de órdenes del contacto.
+    """Retorna los últimos pedidos del contacto buscando por email o teléfono.
 
-    La tabla ``orders`` aún no existe (se implementa en una fase posterior).
-    Por ahora se devuelve un mensaje orientativo para que el agente sepa
-    pedirle al cliente el número de orden.
+    Prioridad de resolución:
+    1. Si ``contact_id`` está disponible, se carga el Contact para obtener
+       email y phone_e164.
+    2. Si ``contact_email`` o ``contact_phone`` se pasan directamente, se usan.
+    3. Sin ningún identificador → lista vacía.
+
+    Retorna hasta ``limit`` órdenes ordenadas del más reciente al más antiguo.
     """
+    limit = max(1, min(limit, 20))
+
+    with _db_ctx(db) as session:
+        # Resolver email y teléfono del contacto.
+        email = contact_email
+        phone = contact_phone
+
+        if contact_id is not None:
+            from src.contacts.models import Contact
+            contact = session.get(Contact, contact_id)
+            if contact and contact.tenant_id == tenant_id:
+                email = email or contact.email
+                phone = phone or contact.phone_e164
+
+        if not email and not phone:
+            return {
+                "pedidos": [],
+                "mensaje": "No se pudo identificar al contacto para buscar pedidos.",
+            }
+
+        # Construir filtros: OR entre email y teléfono si ambos disponibles.
+        import sqlalchemy as _sa
+        conditions = [
+            Order.tenant_id == tenant_id,
+            Order.deleted_at.is_(None),
+        ]
+        match_conditions = []
+        if email:
+            match_conditions.append(Order.customer_email == email)
+        if phone:
+            match_conditions.append(Order.customer_phone == phone)
+        conditions.append(_sa.or_(*match_conditions))
+
+        orders = (
+            session.query(Order)
+            .filter(*conditions)
+            .order_by(
+                Order.placed_at.desc().nulls_last(),
+                Order.created_at.desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+
+    if not orders:
+        return {
+            "pedidos": [],
+            "mensaje": "No se encontraron pedidos para este contacto.",
+        }
+
+    def _fmt_date(dt) -> str | None:
+        if dt is None:
+            return None
+        return dt.strftime("%Y-%m-%d %H:%M")
+
     return {
-        "mensaje": (
-            "El historial de pedidos estará disponible próximamente. "
-            "Por ahora, pedile al cliente el número de orden para consultarla."
-        ),
-        "pedidos": [],
+        "pedidos": [
+            {
+                "numero_orden": o.external_id,
+                "estado": o.status,
+                "total": float(o.total) if o.total is not None else None,
+                "moneda": o.currency,
+                "fecha": _fmt_date(o.placed_at or o.created_at),
+            }
+            for o in orders
+        ],
     }

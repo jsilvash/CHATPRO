@@ -35,7 +35,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 12 | Shopify connector (validación interfaz) | ✅ Mergeada a main |
 | 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ Mergeada a main |
 | 18 | Shopify connector completo + búsqueda semántica en agente | ✅ Mergeada a main |
-| 19 | Connector API REST completa (CRUD + PATCH + webhook-info + sync-incr + orders) | ✅ PR abierto |
+| 19 | Connector API REST completa (CRUD + PATCH + webhook-info + sync-incr + orders) | ✅ Mergeada a main |
+| 20 | historial_pedidos_contacto real (orders reales + match email/phone + Shopify) | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -107,7 +108,8 @@ tests/
 ├── test_woo_incremental.py  — HMAC, webhook handler, embed_product task, search híbrida, aislamiento (Fase 6)
 ├── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
 ├── test_knowledge.py        — chunking, ingestión PDF/URL, búsqueda híbrida, tool agente, API, aislamiento
-└── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
+├── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
+└── test_historial_pedidos.py — historial_pedidos_contacto real: email/phone/contact_id, aislamiento, Shopify (Fase 20)
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
@@ -198,40 +200,39 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Connector API genérica | `POST /configure` acepta `{"credentials": {...}}` genérico; cada conector valida sus propios campos requeridos. NO usar `ConnectorCredentials` con campos fijos. | Fase 19 |
 | connector_name en respuesta | `ConnectorConfigOut` incluye `connector_name` (enriquecido via JOIN a `ConnectorDef`). Helper `_enrich_config(config, db)`. | Fase 19 |
 | Webhook info endpoint | `GET /v1/connector-configs/{id}/webhook-info` devuelve `{webhook_url, webhook_secret, connector_name}`. URL construida con `settings.public_base_url`. | Fase 19 |
+| historial_pedidos_contacto real | Tabla `orders` existente (Fase 6). Match por `customer_email` OR `customer_phone`. `contact_id` pasa en `extra_kwargs` del tool_runner para resolver Contact. Shopify reutiliza la implementación de Woo (misma tabla). Migración 0015 agrega `customer_phone` y `placed_at` a `orders`. | Fase 20 |
 
 ---
 
-## Prompt de arranque — Fase 20 (siguiente prioridad del backlog)
+## Prompt de arranque — Fase 21 (siguiente prioridad del backlog)
 
 ```
-Retomo Fase 20 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Retomo Fase 21 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- Fase 19 (Connector API REST completa) mergeada a main.
-- Rama nueva: git fetch origin main && git checkout -b claude/phase20-XXXXX origin/main
-- Main contiene Fases 0-12 + 16 + 18 + 19 funcionales.
-- Primero: leer SOLO CLAUDE.md. Identificar qué queda del plan (§12 WHATSAPP_HUB_PLAN.md).
+- Fase 20 (historial_pedidos_contacto real) mergeada a main.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase21-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18 + 19 + 20 funcionales.
+- Primero: leer SOLO CLAUDE.md. Identificar qué queda del plan.
 
-- Estado tras Fase 19:
-    - Connector API REST en src/connectors/api.py:
-      * PATCH /v1/connector-configs/{id} → actualiza display_name y status (disabled/connected)
-      * GET /v1/connector-configs/{id}/webhook-info → URL + secret para Woo/Shopify
-      * POST /v1/connector-configs/{id}/sync-incremental → dispara sync_incremental(since)
-      * GET /v1/connector-configs/{id}/orders → lista órdenes con filtros status/email/paginación
-      * ConnectorConfigOut incluye connector_name (no solo connector_def_id)
-      * POST /configure acepta {"credentials": {...}} genérico (no solo WooCommerce)
-    - 28 tests nuevos en tests/test_connector_api_v19.py.
-    - test_connectors.py actualizado para nuevo formato de credenciales.
+- Estado tras Fase 20:
+    - Tabla orders ahora tiene customer_phone y placed_at (migración 0015).
+    - _upsert_order() en WooCommerce extrae billing.phone → customer_phone y date_created → placed_at.
+    - _upsert_order() en Shopify extrae billing_address.phone → customer_phone y created_at → placed_at.
+    - historial_pedidos_contacto en woocommerce/tools.py: real, query BD, match por email OR phone.
+    - historial_pedidos_contacto en shopify/tools.py: delega a la implementación de Woo.
+    - Shopify expose_tools() ahora tiene 3 tools (buscar_productos, consultar_stock_y_precio, historial_pedidos_contacto).
+    - tool_runner pasa contact_id en extra_kwargs de todos los connector tools.
+    - 16 tests nuevos en tests/test_historial_pedidos.py.
+    - test_shopify.py actualizado: assert len(tools) == 3.
 
-- Opciones para Fase 20 (decidir con usuario):
-    A. historial_pedidos_contacto: implementar con tabla orders real (actualmente stub en tools.py).
-       Leer historial desde tabla `orders` sincronizada via webhooks + match por email/teléfono.
-    B. Webhooks salientes para eventos de conectores
-       (product_updated / order_created → tenant webhook via WebhookOut).
-    C. Panel de métricas de conectores: estadísticas de sync (items, errores, latencia).
+- Opciones para Fase 21 (decidir con usuario):
+    A. Webhooks salientes para eventos de conectores
+       (product_updated / order_created → tenant WebhookOut via dispatcher existente en public_api).
+    B. Panel de métricas de conectores: stats de sync (items, errores, latencia) vía API.
+    C. Mejora anti-hallucination: validador post-respuesta que detecta precios no fundamentados en tool_results.
     D. Otro ítem del backlog según prioridad del usuario.
 
-- NO tocar: src/knowledge/, src/billing/, src/public_api/, src/inbox/ salvo que el
-  usuario lo indique explícitamente.
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 21.
+- NO tocar: src/knowledge/, src/billing/, src/inbox/ salvo indicación.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 22.
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```

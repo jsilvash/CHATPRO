@@ -281,9 +281,25 @@ class ShopifyConnector(Connector):
             customer_email = raw.get("email") or (
                 raw.get("customer") or {}
             ).get("email")
+            billing_address = raw.get("billing_address") or {}
+            customer_phone = (
+                billing_address.get("phone")
+                or raw.get("phone")
+                or (raw.get("customer") or {}).get("phone")
+                or None
+            )
             total = _to_decimal(raw.get("current_total_price") or raw.get("total_price"))
             # Status compuesto: financial_status + fulfillment_status
             status = raw.get("financial_status") or raw.get("fulfillment_status") or raw.get("status")
+
+            placed_at_raw = raw.get("created_at")
+            placed_at = None
+            if placed_at_raw:
+                try:
+                    from datetime import datetime as _dt
+                    placed_at = _dt.fromisoformat(placed_at_raw.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    pass
 
             order_data = {
                 "tenant_id": self.tenant_id,
@@ -293,6 +309,8 @@ class ShopifyConnector(Connector):
                 "total": total,
                 "currency": raw.get("currency"),
                 "customer_email": customer_email,
+                "customer_phone": customer_phone,
+                "placed_at": placed_at,
                 "raw": raw,
                 "updated_at": datetime.now(timezone.utc),
             }
@@ -490,6 +508,25 @@ class ShopifyConnector(Connector):
                     },
                 },
                 callable_ref="connectors.shopify.tools:consultar_stock_y_precio",
+            ),
+            ToolSchema(
+                name="historial_pedidos_contacto",
+                description=(
+                    "Lista los últimos pedidos del contacto actual resueltos por email "
+                    "o teléfono. Úsalo cuando el cliente pregunte por el estado de sus "
+                    "órdenes o historial de compras."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "default": 5,
+                            "description": "Cantidad máxima de pedidos a retornar (1-20)",
+                        },
+                    },
+                },
+                callable_ref="connectors.shopify.tools:historial_pedidos_contacto",
             ),
         ]
 
