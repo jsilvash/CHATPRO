@@ -26,15 +26,16 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main |
 | 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main |
 | 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main |
-| 6 | Sync incremental WooCommerce + embeddings | ✅ PR #12 abierto |
+| 6 | Sync incremental WooCommerce + embeddings | ✅ Mergeada a main |
 | 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main |
 | 8 | Inbox + handoff humano | ✅ Mergeada a main |
 | 9 | RAG genérico (PDF/URL) | ✅ Mergeada a main |
 | 10 | API pública + webhooks salientes | ✅ Mergeada a main |
 | 11 | Billing + métricas + cuotas | ✅ Mergeada a main |
-| 12 | Shopify connector (validación interfaz) | Pendiente |
-| 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ PR #10 mergeado |
+| 12 | Shopify connector (validación interfaz) | ✅ Mergeada a main |
+| 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ Mergeada a main |
 | 18 | Shopify connector completo + búsqueda semántica en agente | ✅ Mergeada a main |
+| 19 | Connector API REST completa (CRUD + PATCH + webhook-info + sync-incr + orders) | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -194,37 +195,43 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Tool names semánticos | `expose_tools()` usa nombres sin prefijo de proveedor: `buscar_productos`, `consultar_stock_y_precio`. El agente no sabe si hay Woo o Shopify detrás. | Fase 18 |
 | buscar_productos semántico | `buscar_productos` en ambos tools.py llama `connector.search()` (pgvector + keyword + RRF) en lugar de ILIKE directo. | Fase 18 |
 | Webhook Shopify | Auth por HMAC-SHA256 + base64 en `X-Shopify-Hmac-Sha256`. Topic en `X-Shopify-Topic`. Endpoint `/webhooks/shopify/{tenant_id}/{config_id}`. | Fase 18 |
+| Connector API genérica | `POST /configure` acepta `{"credentials": {...}}` genérico; cada conector valida sus propios campos requeridos. NO usar `ConnectorCredentials` con campos fijos. | Fase 19 |
+| connector_name en respuesta | `ConnectorConfigOut` incluye `connector_name` (enriquecido via JOIN a `ConnectorDef`). Helper `_enrich_config(config, db)`. | Fase 19 |
+| Webhook info endpoint | `GET /v1/connector-configs/{id}/webhook-info` devuelve `{webhook_url, webhook_secret, connector_name}`. URL construida con `settings.public_base_url`. | Fase 19 |
 
 ---
 
-## Prompt de arranque — Fase 19 (segundo conector + refinamientos o según backlog)
+## Prompt de arranque — Fase 20 (siguiente prioridad del backlog)
 
 ```
-Retomo Fase 19 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Retomo Fase 20 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- Fase 18 (Shopify completo + búsqueda semántica en agente) mergeada a main.
-- Rama nueva: git fetch origin main && git checkout -b claude/phase19-XXXXX origin/main
-- Main contiene Fases 0-11 + 16 (fix) + 18 (Shopify) funcionales.
+- Fase 19 (Connector API REST completa) mergeada a main.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase20-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18 + 19 funcionales.
 - Primero: leer SOLO CLAUDE.md. Identificar qué queda del plan (§12 WHATSAPP_HUB_PLAN.md).
 
-- Estado tras Fase 18:
-    - ShopifyConnector: configure, test_connection, sync_full, sync_incremental,
-      verify_webhook, webhook_handler (products + orders), expose_tools, search()
-      híbrida pgvector + keyword + RRF. 437 tests verdes.
-    - buscar_productos en WooCommerce y Shopify tools.py llama connector.search()
-      (búsqueda semántica híbrida activada cuando hay VOYAGE_API_KEY).
-    - Endpoint POST /webhooks/shopify/{tenant_id}/{config_id} operativo.
-    - Shopify registrado en registry.py. Router incluido en main.py.
-    - Shopify tasks.py con embed_product Celery task.
+- Estado tras Fase 19:
+    - Connector API REST en src/connectors/api.py:
+      * PATCH /v1/connector-configs/{id} → actualiza display_name y status (disabled/connected)
+      * GET /v1/connector-configs/{id}/webhook-info → URL + secret para Woo/Shopify
+      * POST /v1/connector-configs/{id}/sync-incremental → dispara sync_incremental(since)
+      * GET /v1/connector-configs/{id}/orders → lista órdenes con filtros status/email/paginación
+      * ConnectorConfigOut incluye connector_name (no solo connector_def_id)
+      * POST /configure acepta {"credentials": {...}} genérico (no solo WooCommerce)
+    - 28 tests nuevos en tests/test_connector_api_v19.py.
+    - test_connectors.py actualizado para nuevo formato de credenciales.
 
-- Opciones para Fase 19 (decidir con usuario):
-    A. historial_pedidos_contacto: implementar con tabla orders real (actualmente stub).
-    B. Connector API REST (/v1/connectors): CRUD de configs + trigger sync + status.
-    C. Webhooks salientes para eventos de conectores (product_updated → tenant webhook).
+- Opciones para Fase 20 (decidir con usuario):
+    A. historial_pedidos_contacto: implementar con tabla orders real (actualmente stub en tools.py).
+       Leer historial desde tabla `orders` sincronizada via webhooks + match por email/teléfono.
+    B. Webhooks salientes para eventos de conectores
+       (product_updated / order_created → tenant webhook via WebhookOut).
+    C. Panel de métricas de conectores: estadísticas de sync (items, errores, latencia).
     D. Otro ítem del backlog según prioridad del usuario.
 
 - NO tocar: src/knowledge/, src/billing/, src/public_api/, src/inbox/ salvo que el
   usuario lo indique explícitamente.
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 20.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 21.
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
