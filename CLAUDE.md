@@ -47,6 +47,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ PR abierto |
 | F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
 | F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
+| F3 | Frontend: Dashboard operativo + gestión usuarios + contactos + SLA | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -253,48 +254,53 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | WS frontend | `useConversationSocket(convId)`: WebSocket a `/ws/inbox/{convId}?token=<jwt>`. Token obtenido de `/api/auth/ws-token` (Next.js API route que lee cookie httpOnly). Auto-reconexión tras 3s. | Fase F2 |
 | Notificaciones WS | `useNotifications()`: WebSocket a `/ws/notifications/{tenant_id}?token=`. Decodifica tenant_id del JWT en cliente con `decodeJwt(jose)`. Badge de `waiting_agent` en nav. | Fase F2 |
 | Inbox frontend | InboxList (filtros status/search/tags + paginación), ConversationCard, ConversationView (mensajes + acciones take/close/reply + panel tags+notas). `params` en pages son `Promise<{...}>` en Next.js 16 — deben ser awaited. | Fase F2 |
+| Dashboard frontend | `app/(app)/dashboard/page.tsx`: client component, `apiGet("/v1/metrics/dashboard")` con auto-refresh `setInterval(30_000)`. Widgets con iconos lucide-react. Skeleton de carga con `animate-pulse`. | Fase F3 |
+| Gestión usuarios frontend | `app/(app)/users/page.tsx`: lista con deactivate modal inline. `app/(app)/users/[user_id]/page.tsx`: detalle + stats (2 endpoints en paralelo con Promise.all). `app/(app)/users/agents/page.tsx`: carga de trabajo con LoadBar. | Fase F3 |
+| Contactos frontend | `app/(app)/contacts/page.tsx`: búsqueda debounced (350ms) llamando `GET /v1/contacts/search`. `app/(app)/contacts/[contact_id]/page.tsx`: carga `GET /v1/contacts/{id}` + `GET /v1/contacts/{id}/facts` + lista inbox en paralelo; filtra convs por phone_e164. | Fase F3 |
+| SLA frontend | `app/(app)/sla/page.tsx`: `GET /v1/inbox/sla-report?date_from&date_to` con filtros de fecha. Formato plano del backend: `avg_first_response_seconds`, `p50_first_response_seconds`, etc. Muestra total y resueltas con % de resolución. | Fase F3 |
+| Nav F3 | `AppNav.tsx` añade rutas: `/users` (Users icon), `/contacts` (Phone icon), `/sla` (BarChart2 icon) con `isActive = pathname.startsWith(href)`. | Fase F3 |
 
 ---
 
-## Prompt de arranque — Fase F3 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F4 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F3 — Frontend: Dashboard operativo + gestión de agentes + conectores.
+Retomo Fase F4 — Frontend: Conectores + canned responses + métricas SSE + office hours.
 Contexto:
-- Fase F2 (login + inbox list + inbox detalle + WebSocket) completada. PR abierto en rama claude/fase-f2-frontend-login-inbox-dN6dY.
-- Rama nueva: git checkout -b claude/fase-f3-frontend-dashboard origin/main
+- Fase F3 (dashboard + usuarios + contactos + SLA) completada. PR abierto en rama claude/fase-f3-frontend-dashboard-UstvV.
+- Rama nueva: git checkout -b claude/fase-f4-frontend-XXXXX origin/main
 - Main contiene backend Fases 0-28. Frontend en frontend/ con Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F2" y este prompt). Nada más.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F3" y este prompt). Nada más.
 
-Estado tras Fase F2 (ya en rama):
-  A. Scaffold Next.js 16 en frontend/
-  B. Auth: cookies httpOnly (chatpro_access + chatpro_refresh), API Routes proxy
-  C. proxy.ts guard (middleware renombrado en Next.js v16)
-  D. Inbox: lista (filtros status/search/tags) + detalle (mensajes + take/close/reply + tags + notas)
-  E. WebSocket en tiempo real con useConversationSocket
-  F. Notificaciones WS con useNotifications (badge waiting_agent en nav)
+Estado tras Fase F3 (ya en rama):
+  A. Dashboard operativo: /dashboard con widgets (GET /v1/metrics/dashboard), auto-refresh 30s.
+  B. Gestión usuarios: /users (lista + deactivate modal), /users/[id] (detalle + stats), /users/agents (carga round-robin).
+  C. Contactos: /contacts (búsqueda debounced), /contacts/[id] (detalle + facts + convs).
+  D. SLA: /sla (reporte con filtros fecha + avg/p50/p90 primera respuesta y resolución).
+  E. Nav: AppNav con rutas /dashboard, /inbox, /users, /contacts, /sla.
 
-Opciones a implementar en Fase F3 (en orden A → B → C → D):
-  A. Dashboard operativo:
-     - Consumir GET /v1/metrics/dashboard
-     - Widgets: conversations_total/active/bot/closed_today, messages_in/out_today, agents_online, unassigned_waiting
-     - Actualización automática cada 30s (o SSE de /v1/metrics/stream)
-  B. Gestión de usuarios/agentes:
-     - Listar usuarios (GET /v1/users)
-     - Ver stats por usuario (GET /v1/users/{id}/stats)
-     - Deactivate con confirmación (PATCH /v1/users/{id}/deactivate)
-     - Ver agentes disponibles (GET /v1/users/available-agents)
-  C. Panel de contactos:
-     - Búsqueda (GET /v1/contacts/search)
-     - Detalle con historial de conversaciones
-  D. Panel de SLA:
-     - Consumir GET /v1/inbox/sla-report
-     - Mostrar avg/p50/p90 de primera respuesta y resolución
+Opciones a implementar en Fase F4 (en orden A → B → C → D):
+  A. Panel de conectores:
+     - Listar (GET /v1/connector-configs)
+     - Crear/editar/eliminar WooCommerce o Shopify
+     - Ver stats por conector (GET /v1/connector-configs/{id}/stats)
+     - Buscar productos (GET /v1/connector-configs/{id}/search?q=)
+  B. Canned responses (respuestas rápidas):
+     - CRUD (GET/POST/PATCH/DELETE /v1/canned-responses)
+     - Búsqueda (GET /v1/canned-responses/search?q=)
+     - Preview de variables (GET /v1/canned-responses/{id}/render?nombre=...)
+  C. Dashboard con métricas SSE en tiempo real:
+     - Conectar a GET /v1/metrics/stream (EventSource)
+     - Actualizar dashboard en tiempo real sin polling
+     - Fallback al polling existente si SSE falla
+  D. Gestión de office hours (si Fase 29 del backend está mergeada):
+     - CRUD /v1/office-hours
+     - Selección de número + días/horarios
 
 Reglas:
 - NO tocar src/ Python
 - Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + actualizar CLAUDE.md + generar prompt F4
+- Commit + push + actualizar CLAUDE.md + generar prompt F5
 ```
 
 ---

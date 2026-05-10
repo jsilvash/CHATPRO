@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MessageSquare, LayoutDashboard, LogOut } from "lucide-react"
+import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
@@ -15,6 +15,9 @@ interface AppNavProps {
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/inbox", label: "Inbox", icon: MessageSquare },
+  { href: "/users", label: "Usuarios", icon: Users },
+  { href: "/contacts", label: "Contactos", icon: Phone },
+  { href: "/sla", label: "SLA", icon: BarChart2 },
 ]
 
 export function AppNav({ session }: AppNavProps) {

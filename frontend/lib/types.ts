@@ -55,3 +55,105 @@ export interface TagOut {
   created_by_user_id: string | null
   created_at: string
 }
+
+// Dashboard métricas
+export interface TenantMetricsDashboard {
+  conversations_total: number
+  conversations_active: number
+  conversations_bot: number
+  conversations_closed_today: number
+  messages_in_today: number
+  messages_out_today: number
+  agents_online: number
+  unassigned_waiting: number
+}
+
+// Usuarios
+export interface UserOut {
+  id: string
+  tenant_id: string
+  email: string
+  full_name: string
+  role: string
+  is_active: boolean
+  created_at: string
+}
+
+export interface UserListResponse {
+  items: UserOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface UserStats {
+  user_id: string
+  conversations_active: number
+  conversations_today: number
+  avg_first_response_sec: number | null
+  notes_count: number
+}
+
+export interface AvailableAgent {
+  id: string
+  email: string
+  full_name: string
+  role: string
+  conv_count: number
+}
+
+export interface AvailableAgentsResponse {
+  items: AvailableAgent[]
+  total: number
+}
+
+export interface DeactivateUserResponse {
+  deactivated_user_id: string
+  reassigned_conversations: number
+  new_assignee_id: string | null
+}
+
+// Contactos
+export interface ContactSearchOut {
+  id: string
+  phone_e164: string
+  display_name: string | null
+  email: string | null
+  conversations_count: number
+  created_at: string
+}
+
+export interface ContactOut {
+  id: string
+  tenant_id: string
+  phone_e164: string
+  display_name: string | null
+  first_name: string | null
+  last_name: string | null
+  email: string | null
+  locale: string | null
+  opt_in_marketing: boolean
+}
+
+export interface FactOut {
+  id: string
+  key: string
+  value_text: string | null
+  value_type: string
+  source: string
+  confidence: number | null
+}
+
+// SLA (formato plano del backend)
+export interface SLAReport {
+  date_from: string
+  date_to: string
+  total_conversations: number
+  resolved_conversations: number
+  avg_first_response_seconds: number | null
+  avg_resolution_seconds: number | null
+  p50_first_response_seconds: number | null
+  p90_first_response_seconds: number | null
+  p50_resolution_seconds: number | null
+  p90_resolution_seconds: number | null
+}
