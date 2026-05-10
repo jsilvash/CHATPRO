@@ -237,6 +237,7 @@ def collect_tools_for_conversation(
                 extra_kwargs={
                     "tenant_id": conversation.tenant_id,
                     "config_id": config.id,
+                    "contact_id": conversation.contact_id,
                 },
                 is_builtin=False,
             )

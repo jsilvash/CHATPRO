@@ -268,6 +268,16 @@ class WooCommerceConnector(Connector):
                 .first()
             )
 
+            billing = raw.get("billing") or {}
+            placed_at_raw = raw.get("date_created") or raw.get("date_created_gmt")
+            placed_at = None
+            if placed_at_raw:
+                try:
+                    from datetime import datetime as _dt
+                    placed_at = _dt.fromisoformat(placed_at_raw.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    pass
+
             order_data = {
                 "tenant_id": self.tenant_id,
                 "connector_config_id": self.config_id,
@@ -275,7 +285,9 @@ class WooCommerceConnector(Connector):
                 "status": raw.get("status"),
                 "total": _to_decimal(raw.get("total")),
                 "currency": raw.get("currency"),
-                "customer_email": raw.get("billing", {}).get("email") or raw.get("customer_email"),
+                "customer_email": billing.get("email") or raw.get("customer_email"),
+                "customer_phone": billing.get("phone") or None,
+                "placed_at": placed_at,
                 "raw": raw,
                 "updated_at": datetime.now(timezone.utc),
             }

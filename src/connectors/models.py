@@ -141,11 +141,15 @@ class Product(Base, TimestampMixin):
 
 
 class Order(Base, TimestampMixin):
-    """Orden sincronizada vía webhook de WooCommerce (Fase 6).
+    """Orden sincronizada vía webhook de WooCommerce o Shopify (Fase 6+).
 
     Se persiste en formato crudo para consulta histórica. ``status`` refleja
-    el estado de WooCommerce (pending/processing/completed/cancelled/refunded).
-    ``deleted_at`` es soft-delete por consistencia, aunque WC raramente borra órdenes.
+    el estado del proveedor (pending/processing/completed/cancelled/refunded).
+    ``deleted_at`` es soft-delete por consistencia, aunque los proveedores
+    raramente borran órdenes.
+
+    ``customer_phone`` y ``placed_at`` se agregan en Fase 20 para permitir
+    el match por teléfono y ordenar cronológicamente en historial_pedidos_contacto.
     """
 
     __tablename__ = "orders"
@@ -169,6 +173,12 @@ class Order(Base, TimestampMixin):
     total: Mapped[float | None] = mapped_column(sa.Numeric(12, 2), nullable=True)
     currency: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     customer_email: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Fase 20: teléfono de facturación para match cuando el contacto no tiene email.
+    customer_phone: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Fase 20: fecha/hora real del pedido en el proveedor (date_created en Woo, created_at en Shopify).
+    placed_at: Mapped[sa.DateTime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
     raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deleted_at: Mapped[sa.DateTime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
@@ -182,4 +192,6 @@ class Order(Base, TimestampMixin):
         sa.Index("ix_orders_tenant_config", "tenant_id", "connector_config_id"),
         sa.Index("ix_orders_customer_email", "tenant_id", "customer_email",
                  postgresql_where=sa.text("customer_email IS NOT NULL")),
+        sa.Index("ix_orders_customer_phone", "tenant_id", "customer_phone",
+                 postgresql_where=sa.text("customer_phone IS NOT NULL")),
     )
