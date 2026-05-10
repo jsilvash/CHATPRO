@@ -1199,14 +1199,18 @@ CREATE INDEX ON audit_log(tenant_id, target_type, target_id);
   - Cifrado de credenciales operativo.
 - **PR:** "fase 5: connector ABC + woocommerce sync full"
 
-### Fase 6 — Sync incremental WooCommerce + embeddings de productos
+### Fase 6 — Sync incremental WooCommerce + embeddings de productos ✅
 
 - **Objetivo:** webhooks Woo + embeddings + búsqueda híbrida.
 - **Done:**
-  - Endpoint `POST /webhooks/woo/{tenant_id}/{config_id}` con verificación HMAC.
-  - Handler procesa product/order events; encola embeddings.
-  - `product_embeddings` poblada.
-  - Tool `search()` del conector con BM25 + cosine + reranking.
+  - `sync_incremental`: GET `/wc/v3/products?modified_after=<since>` con paginación `X-WP-TotalPages`.
+  - `verify_webhook`: HMAC-SHA256(secret, raw_body) base64, `compare_digest` timing-safe, acepta headers en cualquier casing.
+  - `webhook_handler`: `product.created/updated/restored` → upsert; `product.deleted` → soft delete.
+  - Embeddings Voyage AI `voyage-3` (1024 dims) en cada upsert; almacenados en `products.embedding VECTOR(1024)`.
+  - `search()` híbrido: FTS `plainto_tsquery` (40%) + cosine similarity pgvector (60%); prefiltro `tenant_id`; fallback a solo FTS si Voyage falla.
+  - Migración `0012_products_vector.py`: `CREATE EXTENSION vector`, `ADD COLUMN embedding vector(1024)`, índice HNSW `m=16 ef_construction=64`.
+  - 36 tests: sync mock, HMAC verify/reject, handler upsert/delete, híbrido, aislamiento tenant, score combinado, fallback.
+- **Rama:** `claude/woocommerce-incremental-sync-bdrob`
 - **PR:** "fase 6: woo incremental + embeddings"
 
 ### Fase 7 — Tools del agente (catálogo, stock, órdenes)
