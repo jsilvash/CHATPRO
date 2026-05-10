@@ -164,7 +164,10 @@ class ShopifyConnector(Connector):
             logger.exception("sync_full Shopify falló")
             self._update_config_sync_error(str(exc)[:500])
         else:
-            self._update_config_sync_ok()
+            if errors:
+                self._update_config_sync_error(errors[0])
+            else:
+                self._update_config_sync_ok()
 
         finished_at = datetime.now(timezone.utc)
         return SyncResult(
@@ -252,6 +255,8 @@ class ShopifyConnector(Connector):
                 config.status = "connected"
                 if self._db_session is None:
                     db.commit()
+                else:
+                    db.flush()
 
     def _update_config_sync_error(self, msg: str) -> None:
         with self._get_db() as db:
@@ -261,6 +266,8 @@ class ShopifyConnector(Connector):
                 config.status = "error"
                 if self._db_session is None:
                     db.commit()
+                else:
+                    db.flush()
 
     # ── sync_incremental (fase futura) ────────────────────────────────────────
 

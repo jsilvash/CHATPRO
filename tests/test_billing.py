@@ -63,9 +63,9 @@ def _make_wa_message(db: Session, tenant_id: uuid.UUID, direction: str, day: dat
 
     wn = WaNumber(
         tenant_id=tenant_id,
-        phone_number=f"+1{uuid.uuid4().int % 10_000_000_000:010d}",
+        phone=f"+1{uuid.uuid4().int % 10_000_000_000:010d}",
         waha_session_name=f"s{uuid.uuid4().hex[:8]}",
-        display_name="test",
+        label="test",
     )
     db.add(wn)
     db.flush()
@@ -132,8 +132,8 @@ def test_aggregate_daily_metrics_storage(db: Session):
         tenant_id=tenant.id,
         title="doc",
         source_type="url",
-        source_ref="http://x.com",
-        status="indexed",
+        source_uri="http://x.com",
+        status="ready",
     )
     db.add(doc)
     db.flush()

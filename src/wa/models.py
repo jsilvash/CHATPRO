@@ -132,8 +132,14 @@ class WaConversation(Base, TimestampMixin):
     wa_contact_name: Mapped[str] = mapped_column(
         sa.Text, nullable=False, server_default=""
     )
-    # bot | waiting_agent | agent | closed (ciclo se ampliará en Fase 8).
+    # bot | waiting_agent | agent | closed
     status: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="bot")
+    # Agente humano actualmente asignado (null si el bot atiende o aún no asignado).
+    assigned_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     last_message_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
@@ -147,6 +153,12 @@ class WaConversation(Base, TimestampMixin):
     __table_args__ = (
         sa.UniqueConstraint(
             "wa_number_id", "wa_contact_phone", name="uq_wa_conversations_number_phone"
+        ),
+        sa.Index(
+            "ix_wa_conversations_tenant_assigned",
+            "tenant_id",
+            "assigned_user_id",
+            postgresql_where=sa.text("assigned_user_id IS NOT NULL"),
         ),
     )
 

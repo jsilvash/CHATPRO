@@ -20,19 +20,20 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 
 | Fase | Título | Estado |
 |---|---|---|
-| 0 | Skeleton + multi-tenant + auth + aislamiento | ✅ Mergeada a main (PR #0) |
-| 1 | Conexión WAHA de un número + webhook + persistencia | ✅ Mergeada a main (PR #1) |
-| 2 | Bot Claude con persona/locale/tono | ✅ Mergeada a main (PR #2) |
-| 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main (PR #3) |
-| 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main (PR #4) |
-| 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main (PR #5) |
-| 6 | Sync incremental WooCommerce + embeddings | Pendiente |
-| 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main (PR #7) |
-| 8 | Inbox + handoff humano | ✅ Mergeada a main (PR #8) |
-| 9 | RAG genérico (PDF/URL) | ✅ Mergeada a main (PR #9) |
-| 10 | API pública + webhooks salientes | ✅ Mergeada a main (PR #10) |
-| 11 | Billing + métricas + cuotas | ✅ Mergeada a main (PR #7) |
-| 12 | Shopify connector (validación interfaz) | ✅ Mergeada a main (PR #12) |
+| 0 | Skeleton + multi-tenant + auth + aislamiento | ✅ Mergeada a main |
+| 1 | Conexión WAHA de un número + webhook + persistencia | ✅ Mergeada a main |
+| 2 | Bot Claude con persona/locale/tono | ✅ Mergeada a main |
+| 3 | Memoria corto plazo (últimos N turnos + resumen) | ✅ Mergeada a main |
+| 4 | Memoria largo plazo (hechos del contacto) | ✅ Mergeada a main |
+| 5 | Connector ABC + WooCommerce sync full | ✅ Mergeada a main |
+| 6 | Sync incremental WooCommerce + embeddings | **🔜 Próxima** |
+| 7 | Tools del agente (catálogo, stock, órdenes) | ✅ Mergeada a main |
+| 8 | Inbox + handoff humano | ✅ Mergeada a main |
+| 9 | RAG genérico (PDF/URL) | ✅ Mergeada a main |
+| 10 | API pública + webhooks salientes | ✅ Mergeada a main |
+| 11 | Billing + métricas + cuotas | ✅ Mergeada a main |
+| 12 | Shopify connector (validación interfaz) | Pendiente |
+| 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ PR #10 abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -77,9 +78,8 @@ src/
 ├── wa/                  — modelos WA (WaNumber/WaSession/WaConversation/WaMessage) + api REST
 ├── utils/               — phone (normalize)
 ├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
-├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+), Shopify (Fase 12+)
-│   ├── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
-│   └── shopify/         — ShopifyConnector: configure/test_connection/sync_full + tools
+├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
+│   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer, tool_runner (Fase 7)
 ├── inbox/               — (Fase 8) HandoffEvent + API REST /inbox (list/get/take/reply/close)
 ├── knowledge/           — (Fase 9) KbDocument/KbChunk, ingestor PDF/URL, búsqueda RAG híbrida, API /knowledge
@@ -101,7 +101,6 @@ tests/
 ├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
 ├── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
 ├── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
-├── test_shopify.py          — ShopifyConnector: configure/test_connection/sync_full, tools, aislamiento
 ├── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
 ├── test_knowledge.py        — chunking, ingestión PDF/URL, búsqueda híbrida, tool agente, API, aislamiento
 └── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
@@ -185,3 +184,30 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Cifrado credenciales | AES-GCM con DEK por config, KEK desde `CONNECTOR_MASTER_KEY` env var | §11 |
 | DB session inyectada | Conector recibe `db=` opcional; si no, abre `get_db_session()` propio. Clave para tests. | Fase 5 |
 | Auth | JWT stateless (access 1h, refresh 7d) | §3 |
+
+---
+
+## Prompt de arranque — Fase 17 (Sync incremental WooCommerce + embeddings de productos)
+
+```
+Retomo Fase 17 — Sync incremental WooCommerce + embeddings de productos (Fase 6 del plan).
+Contexto:
+- Rama activa: crear nueva desde main → claude/woo-incremental-<hash>
+  git fetch origin main && git checkout -b claude/woo-incremental-XXXXX origin/main
+- PR #10 (fase-16 retomo / fixes) fue abierto; esperar merge antes de arrancar, o crear desde PR #10 si ya mergeó.
+- Main contiene Fases 0-5 + 7-11 funcionales. Fase 6 (sync incremental) fue saltada y es la próxima.
+- Primero: leer SOLO CLAUDE.md + WHATSAPP_HUB_PLAN.md §8 (Sincronización WooCommerce).
+- Objetivo Fase 6:
+    1. Endpoint POST /webhooks/woo/{tenant_id}/{config_id} con verificación HMAC X-WC-Webhook-Signature
+    2. Handler para topics: product.created, product.updated, product.deleted, order.created, order.updated
+    3. Migración para product_embeddings (si no existe; revisar 0012_products_vector.py)
+    4. Job Celery embed_product(product_id) — genera embedding de nombre+descripción y guarda en product_embeddings
+    5. WooCommerceConnector.sync_incremental(since) usando /wc/v3/products?modified_after=since
+    6. WooCommerceConnector.search() con búsqueda híbrida pgvector + BM25 sobre product_embeddings + products
+    7. Tests: verificación HMAC, handler product.updated actualiza producto, job embed, búsqueda semántica, aislamiento
+- Archivos clave a leer: src/connectors/woocommerce/connector.py, src/connectors/models.py,
+  alembic/versions/0012_products_vector.py, src/connectors/embeddings.py
+- Fallos previos (ya corregidos en PR #10): ninguno — 342 tests pasan en rama base.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 18.
+- NO tocar: src/knowledge/, src/billing/, src/public_api/ (fases completas y estables).
+```

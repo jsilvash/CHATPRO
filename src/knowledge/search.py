@@ -96,13 +96,13 @@ def _semantic_search(
             d.source_uri,
             c.content,
             c.position,
-            1 - (c.embedding <=> :query_vec::vector) AS score
+            1 - (c.embedding <=> CAST(:query_vec AS vector)) AS score
         FROM kb_chunks c
         JOIN kb_documents d ON d.id = c.document_id
         WHERE c.tenant_id = :tenant_id
           AND d.status = 'ready'
           {number_filter}
-        ORDER BY c.embedding <=> :query_vec::vector
+        ORDER BY c.embedding <=> CAST(:query_vec AS vector)
         LIMIT :limit
     """)
 

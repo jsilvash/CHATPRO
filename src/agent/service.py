@@ -377,6 +377,35 @@ def _stringify_for_anthropic(output: dict) -> str:
         return str(output)
 
 
+_AUTO_ESCALATE_REASONS = frozenset({"max_tool_calls", "max_cost", "hard_limit"})
+
+
+def _auto_escalate_if_needed(
+    db: Session, conversation: WaConversation, end_reason: str
+) -> None:
+    """Si el bot no pudo resolver, transiciona a waiting_agent y crea HandoffEvent."""
+    if end_reason not in _AUTO_ESCALATE_REASONS:
+        return
+    if conversation.status != "bot":
+        return
+
+    from datetime import UTC, datetime
+
+    from src.inbox.models import HandoffEvent
+
+    conversation.status = "waiting_agent"
+    db.add(conversation)
+
+    evento = HandoffEvent(
+        tenant_id=conversation.tenant_id,
+        wa_conversation_id=conversation.id,
+        motivo=f"auto_escalado:{end_reason}",
+        opened_at=datetime.now(UTC),
+    )
+    db.add(evento)
+    db.flush()
+
+
 def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -> None:
     """Genera y persiste la respuesta del bot para un mensaje inbound.
 
@@ -442,6 +471,10 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
             response_text = _FALLBACK_ESCALATION_TEXT
             end_reason = end_reason or "empty_response"
             metadata["end_reason"] = end_reason
+
+        # Auto-transición: si el bot no pudo resolver (límite de tools/costo/loop),
+        # derivar a waiting_agent para que un humano retome.
+        _auto_escalate_if_needed(db, conversation, end_reason)
 
         _persist_outbound(db, conversation, wn, response_text, llm_metadata=metadata)
         _update_usage_metrics(db, conversation.tenant_id, metadata)

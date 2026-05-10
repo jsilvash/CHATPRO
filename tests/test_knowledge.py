@@ -154,12 +154,21 @@ def test_ingest_pdf_crea_documento(mock_embed, db):
 def test_ingest_pdf_con_wa_number_id(mock_embed, db):
     from src.knowledge.ingestor import ingest_pdf
     from src.knowledge.models import KbChunk
+    from src.wa.models import WaNumber
 
     tenant = Tenant(slug="kb-pdf-number", name="PDF Number Tenant")
     db.add(tenant)
     db.flush()
 
-    wa_number_id = uuid.uuid4()  # UUID ficticio para este test
+    # Necesitamos un WaNumber real para satisfacer la FK de kb_documents
+    wn = WaNumber(
+        tenant_id=tenant.id,
+        label="número test",
+        waha_session_name=f"s{uuid.uuid4().hex[:8]}",
+    )
+    db.add(wn)
+    db.flush()
+    wa_number_id = wn.id
 
     doc = ingest_pdf(
         file_bytes=_minimal_pdf_bytes(),
