@@ -32,7 +32,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 9 | RAG genérico (PDF/URL) | ✅ Mergeada a main (PR #9) |
 | 10 | API pública + webhooks salientes | ✅ Mergeada a main (PR #10) |
 | 11 | Billing + métricas + cuotas | ✅ Mergeada a main (PR #7) |
-| 12 | Shopify connector (validación interfaz) | Pendiente |
+| 12 | Shopify connector (validación interfaz) | ✅ Mergeada a main (PR #12) |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -77,8 +77,9 @@ src/
 ├── wa/                  — modelos WA (WaNumber/WaSession/WaConversation/WaMessage) + api REST
 ├── utils/               — phone (normalize)
 ├── contacts/            — modelos Contact/ContactFact + API REST (Fase 4+)
-├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+)
-│   └── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
+├── connectors/          — ABC Connector, crypto AES-GCM, registry, WooCommerce (Fase 5+), Shopify (Fase 12+)
+│   ├── woocommerce/     — WooCommerceConnector: configure/test_connection/sync_full + tools
+│   └── shopify/         — ShopifyConnector: configure/test_connection/sync_full + tools
 ├── agent/               — (Fase 2+) service, prompt_builder, llm, facts_extractor, summarizer, tool_runner (Fase 7)
 ├── inbox/               — (Fase 8) HandoffEvent + API REST /inbox (list/get/take/reply/close)
 ├── knowledge/           — (Fase 9) KbDocument/KbChunk, ingestor PDF/URL, búsqueda RAG híbrida, API /knowledge
@@ -100,6 +101,7 @@ tests/
 ├── test_facts_extractor.py  — extractor hechos: parse, get_or_create, upsert, idempotencia
 ├── test_contacts_api.py     — REST contacts: CRUD, facts upsert/delete, isolation
 ├── test_connectors.py       — cifrado AES-GCM, configure/test/sync_full, API, aislamiento
+├── test_shopify.py          — ShopifyConnector: configure/test_connection/sync_full, tools, aislamiento
 ├── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
 ├── test_knowledge.py        — chunking, ingestión PDF/URL, búsqueda híbrida, tool agente, API, aislamiento
 └── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
