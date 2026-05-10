@@ -5,6 +5,9 @@ que se envía como ``tool_result`` al agente.
 
 ``db`` es opcional: si se pasa una sesión SQLAlchemy se reutiliza, si no
 se abre una nueva. Esto permite a los tests usar una sesión con rollback.
+
+``buscar_productos`` usa ``WooCommerceConnector.search()`` — búsqueda híbrida
+pgvector + keyword con RRF (Fase 18).
 """
 
 from __future__ import annotations
@@ -35,44 +38,33 @@ def buscar_productos(
     db=None,
     **_kwargs,
 ) -> dict:
-    """Busca productos en el catálogo local por texto libre."""
+    """Busca productos usando búsqueda híbrida semántica (pgvector + keyword + RRF)."""
     max_results = max(1, min(max_results, 20))
 
-    with _db_ctx(db) as session:
-        products = (
-            session.query(Product)
-            .filter(
-                Product.tenant_id == tenant_id,
-                Product.connector_config_id == config_id,
-                Product.deleted_at.is_(None),
-                Product.name.ilike(f"%{query}%")
-                | Product.description_short.ilike(f"%{query}%")
-                | Product.sku.ilike(f"%{query}%"),
-            )
-            .limit(max_results)
-            .all()
-        )
+    from src.connectors.woocommerce.connector import WooCommerceConnector
+    connector = WooCommerceConnector(tenant_id=tenant_id, config_id=config_id, db=db)
+    results = connector.search(query, top_k=max_results)
 
-        if not products:
-            return {"resultados": [], "mensaje": "No se encontraron productos."}
+    if not results:
+        return {"resultados": [], "mensaje": "No se encontraron productos."}
 
-        return {
-            "resultados": [
-                {
-                    "id": str(p.id),
-                    "external_id": p.external_id,
-                    "nombre": p.name,
-                    "sku": p.sku,
-                    "precio": float(p.price_sale or p.price_regular or 0),
-                    "moneda": p.currency or "USD",
-                    "stock": p.stock_quantity,
-                    "stock_status": p.stock_status,
-                    "url": p.url,
-                    "descripcion": p.description_short or "",
-                }
-                for p in products
-            ]
-        }
+    return {
+        "resultados": [
+            {
+                "id": r.id,
+                "external_id": r.metadata.get("external_id"),
+                "nombre": r.title,
+                "sku": r.metadata.get("sku"),
+                "precio": r.metadata.get("price_sale") or r.metadata.get("price_regular") or 0.0,
+                "moneda": r.metadata.get("currency") or "USD",
+                "stock": r.metadata.get("stock_quantity"),
+                "stock_status": r.metadata.get("stock_status"),
+                "url": r.url,
+                "descripcion": r.snippet,
+            }
+            for r in results
+        ]
+    }
 
 
 def consultar_stock_y_precio(

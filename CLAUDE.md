@@ -34,6 +34,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 11 | Billing + métricas + cuotas | ✅ Mergeada a main |
 | 12 | Shopify connector (validación interfaz) | Pendiente |
 | 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ PR #10 mergeado |
+| 18 | Shopify connector completo + búsqueda semántica en agente | ✅ Mergeada a main |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -189,44 +190,41 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Embedding en products | Columna `embedding VECTOR(1024)` directamente en tabla `products` (nullable). No tabla separada. | Fase 6 |
 | Webhook WooCommerce | Auth por HMAC-SHA256 + base64 en `X-WC-Webhook-Signature`. Endpoint usa `Depends(get_db)` para que TestClient inyecte DB de test. | Fase 6 |
 | Celery tasks | `src/celery_app.py` centraliza la instancia. Tasks importan deps a nivel de módulo para facilitar mock en tests. | Fase 6 |
+| get_settings en connectors | `get_settings` se importa a nivel de módulo (no dentro de funciones) en connectors que lo usan, para que `patch("src.connectors.X.connector.get_settings")` funcione en tests. | Fase 18 |
+| Tool names semánticos | `expose_tools()` usa nombres sin prefijo de proveedor: `buscar_productos`, `consultar_stock_y_precio`. El agente no sabe si hay Woo o Shopify detrás. | Fase 18 |
+| buscar_productos semántico | `buscar_productos` en ambos tools.py llama `connector.search()` (pgvector + keyword + RRF) en lugar de ILIKE directo. | Fase 18 |
+| Webhook Shopify | Auth por HMAC-SHA256 + base64 en `X-Shopify-Hmac-Sha256`. Topic en `X-Shopify-Topic`. Endpoint `/webhooks/shopify/{tenant_id}/{config_id}`. | Fase 18 |
 
 ---
 
-## Prompt de arranque — Fase 18 (Shopify connector + integración Fase 6 en agente)
+## Prompt de arranque — Fase 19 (segundo conector + refinamientos o según backlog)
 
 ```
-Retomo Fase 18 — Shopify connector completo + integración búsqueda semántica en agente.
+Retomo Fase 19 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- PR #12 (Fase 6: sync incremental WooCommerce + embeddings) abierto, pendiente de merge.
-- Esperar merge de PR #12 a main antes de arrancar, o crear desde PR #12 si ya mergeó.
-- Rama nueva: git fetch origin main && git checkout -b claude/shopify-phase18-XXXXX origin/main
-- Main contiene Fases 0-5 + 6 (PR #12) + 7-11 funcionales.
-- Primero: leer SOLO CLAUDE.md + WHATSAPP_HUB_PLAN.md §7 (Conectores / Shopify).
+- Fase 18 (Shopify completo + búsqueda semántica en agente) mergeada a main.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase19-XXXXX origin/main
+- Main contiene Fases 0-11 + 16 (fix) + 18 (Shopify) funcionales.
+- Primero: leer SOLO CLAUDE.md. Identificar qué queda del plan (§12 WHATSAPP_HUB_PLAN.md).
 
-- Objetivo Fase 18:
-    1. ShopifyConnector completo (validate_interface, ya hay esqueleto en src/connectors/shopify/):
-       - configure() con site_url + access_token
-       - test_connection() contra /admin/api/2024-01/shop.json
-       - sync_full() paginando /admin/api/2024-01/products.json (250 por página)
-       - sync_incremental(since) con updated_at_min=since
-       - verify_webhook() HMAC-SHA256 sobre X-Shopify-Hmac-SHA256
-       - webhook_handler() products/orders igual que WooCommerce
-       - expose_tools() y search() idénticos a WooCommerce
-    2. Endpoint POST /webhooks/shopify/{tenant_id}/{config_id} (igual que WooCommerce)
-    3. Integrar búsqueda semántica de Fase 6 en tools del agente (buscar_productos):
-       - Actualmente usa ILIKE en tools.py; actualizar para llamar connector.search()
-         que ya es híbrida (keyword + pgvector + RRF)
-    4. Tests: ShopifyConnector (misma cobertura que WooCommerce), webhook Shopify,
-       buscar_productos usa search() semántica, aislamiento.
+- Estado tras Fase 18:
+    - ShopifyConnector: configure, test_connection, sync_full, sync_incremental,
+      verify_webhook, webhook_handler (products + orders), expose_tools, search()
+      híbrida pgvector + keyword + RRF. 437 tests verdes.
+    - buscar_productos en WooCommerce y Shopify tools.py llama connector.search()
+      (búsqueda semántica híbrida activada cuando hay VOYAGE_API_KEY).
+    - Endpoint POST /webhooks/shopify/{tenant_id}/{config_id} operativo.
+    - Shopify registrado en registry.py. Router incluido en main.py.
+    - Shopify tasks.py con embed_product Celery task.
 
-- Archivos clave a leer:
-    - src/connectors/shopify/ (conector existente con interfaz validada)
-    - src/connectors/woocommerce/connector.py (modelo a seguir para Shopify)
-    - src/connectors/woocommerce/webhook.py (modelo para endpoint Shopify)
-    - src/connectors/woocommerce/tools.py (actualizar buscar_productos)
-    - tests/test_shopify.py (tests existentes de validación de interfaz)
+- Opciones para Fase 19 (decidir con usuario):
+    A. historial_pedidos_contacto: implementar con tabla orders real (actualmente stub).
+    B. Connector API REST (/v1/connectors): CRUD de configs + trigger sync + status.
+    C. Webhooks salientes para eventos de conectores (product_updated → tenant webhook).
+    D. Otro ítem del backlog según prioridad del usuario.
 
-- NO tocar: src/knowledge/, src/billing/, src/public_api/, src/inbox/ (fases estables).
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 19.
+- NO tocar: src/knowledge/, src/billing/, src/public_api/, src/inbox/ salvo que el
+  usuario lo indique explícitamente.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 20.
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```

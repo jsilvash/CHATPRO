@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import text
 
+from src.config import get_settings
 from src.connectors.base import (
     Connector,
     SearchResult,
@@ -509,7 +510,6 @@ class WooCommerceConnector(Connector):
         combina los resultados semánticos con los de keyword vía Reciprocal
         Rank Fusion. Si no hay API key, cae a búsqueda de texto puro.
         """
-        from src.config import get_settings
         settings = get_settings()
         query_embedding: list[float] | None = None
 

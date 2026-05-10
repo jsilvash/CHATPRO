@@ -1,20 +1,27 @@
-"""Tests de Fase 12: ShopifyConnector (configure/test_connection/sync_full/tools/aislamiento).
+"""Tests de Fase 18: ShopifyConnector completo + integración búsqueda semántica.
 
 Cobertura:
 - configure(): persiste credenciales cifradas AES-GCM, valida campos requeridos.
 - test_connection(): status 'connected' si Shopify responde 200, 'error' si no.
 - sync_full(): parsea páginas de Shopify (mock HTTP), crea/actualiza productos en BD.
 - sync_full con paginación cursor (Link header).
-- tools del agente: buscar_productos, consultar_stock_y_precio.
+- sync_incremental(): usa updated_at_min, actualiza last_incremental_sync_at.
+- verify_webhook(): firma HMAC válida e inválida.
+- webhook_handler(): products/create, products/update, products/delete, orders/create, orders/updated.
+- Endpoint POST /webhooks/shopify/{tenant_id}/{config_id}: 200 OK, 401 firma inválida, 404 config no encontrada.
+- tools del agente: buscar_productos (semántica híbrida), consultar_stock_y_precio.
 - expose_tools(): retorna ToolSchemas con callable_ref correcto.
-- search(): búsqueda full-text sobre productos en BD.
+- search(): búsqueda híbrida pgvector + keyword + RRF.
 - Aislamiento cross-tenant: tenant B no ve productos de tenant A.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import uuid
+from base64 import b64encode
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -24,13 +31,15 @@ from sqlalchemy.orm import Session
 
 from src.auth.tokens import create_access_token
 from src.connectors.crypto import decrypt_credentials, encrypt_credentials
-from src.connectors.models import ConnectorConfig, ConnectorDef, Product
+from src.connectors.models import ConnectorConfig, ConnectorDef, Order, Product
 from src.connectors.shopify.connector import (
     ShopifyConnector,
     _extract_page_info,
     _map_shopify_product,
     _parse_next_link,
+    _rrf_merge,
 )
+from src.connectors.shopify.tasks import _build_product_text
 from src.connectors.shopify.tools import buscar_productos, consultar_stock_y_precio
 from src.db.models import Tenant, User
 
@@ -651,6 +660,7 @@ def test_tool_consultar_sin_sku_ni_id(db, tenant_a):
 
 
 def test_expose_tools_retorna_esquemas(db, tenant_a):
+    """Los nombres de tools son semánticos (sin prefijo proveedor) — el agente no nota si es Shopify o Woo."""
     tenant, _ = tenant_a
     defn = _make_shopify_def(db)
     config = _make_config(db, tenant, defn)
@@ -660,8 +670,8 @@ def test_expose_tools_retorna_esquemas(db, tenant_a):
     assert len(tools) == 2
 
     nombres = {t.name for t in tools}
-    assert "shopify_buscar_productos" in nombres
-    assert "shopify_consultar_stock_y_precio" in nombres
+    assert "buscar_productos" in nombres
+    assert "consultar_stock_y_precio" in nombres
 
     for tool in tools:
         assert tool.callable_ref.startswith("connectors.shopify.tools:")
@@ -678,10 +688,13 @@ def test_search_retorna_resultados(db, tenant_a):
     _seed_product(db, tenant, config)
     connector = _make_connector(db, tenant, config)
 
-    results = connector.search("Remera")
+    with patch("src.connectors.shopify.connector.get_settings") as mock_settings:
+        mock_settings.return_value.voyage_api_key = ""
+        results = connector.search("Remera")
+
     assert len(results) == 1
     assert results[0].title == "Remera Shopify"
-    assert results[0].score == 1.0
+    assert results[0].score > 0
 
 
 def test_search_sin_resultados(db, tenant_a):
@@ -690,7 +703,9 @@ def test_search_sin_resultados(db, tenant_a):
     config = _make_config(db, tenant, defn)
     connector = _make_connector(db, tenant, config)
 
-    results = connector.search("ProductoQueNoExiste")
+    with patch("src.connectors.shopify.connector.get_settings") as mock_settings:
+        mock_settings.return_value.voyage_api_key = ""
+        results = connector.search("ProductoQueNoExiste")
     assert results == []
 
 
@@ -789,3 +804,670 @@ def test_aislamiento_consultar_stock(db, tenant_a, tenant_b):
         db=db,
     )
     assert "error" in result
+
+
+# ── Helpers de firma Shopify ──────────────────────────────────────────────────
+
+
+def _sign_shopify_payload(payload: bytes, secret: str) -> str:
+    """Genera X-Shopify-Hmac-Sha256 válida para un payload dado."""
+    return b64encode(hmac.new(secret.encode(), payload, hashlib.sha256).digest()).decode()
+
+
+def _make_config_with_secret(db: Session, tenant: Tenant, secret: str = "secreto_shopify") -> ConnectorConfig:
+    """Crea ConnectorConfig con secret explícito y credenciales cifradas."""
+    defn = _make_shopify_def(db)
+    blob = encrypt_credentials(_CREDS)
+    config = ConnectorConfig(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        connector_def_id=defn.id,
+        display_name="Tienda Shopify Test",
+        status="connected",
+        webhook_secret=secret,
+        encrypted_credentials=blob,
+    )
+    db.add(config)
+    db.flush()
+    return config
+
+
+_FAKE_ORDER_SHOPIFY = {
+    "id": 888,
+    "email": "cliente@shopify.com",
+    "financial_status": "paid",
+    "current_total_price": "55.00",
+    "currency": "USD",
+    "line_items": [{"product_id": 99, "quantity": 1}],
+}
+
+
+# ── Tests de sync_incremental ─────────────────────────────────────────────────
+
+
+def _build_shopify_resp(products: list, next_link: str | None = None) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"products": products}
+    link_value = (
+        f'<https://tienda.myshopify.com/admin/api/2024-01/products.json?page_info=abc123>; rel="next"'
+        if next_link
+        else ""
+    )
+    resp.headers = {"Link": link_value}
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+def test_sync_incremental_crea_productos(db, tenant_a):
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    connector = _make_connector(db, tenant, config)
+    connector.configure(_CREDS)
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    resp = _build_shopify_resp([_FAKE_PRODUCT_SHOPIFY])
+
+    with patch("httpx.Client") as mock_client_cls, \
+         patch.object(connector, "_enqueue_embed"):
+        mock_ctx = MagicMock()
+        mock_client_cls.return_value.__enter__ = lambda s: mock_ctx
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_ctx.get.return_value = resp
+
+        result = connector.sync_incremental(since)
+
+    assert result.items_created == 1
+    assert result.errors == []
+
+    db.refresh(config)
+    assert config.last_incremental_sync_at is not None
+
+
+def test_sync_incremental_usa_updated_at_min(db, tenant_a):
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    connector = _make_connector(db, tenant, config)
+    connector.configure(_CREDS)
+
+    since = datetime(2026, 3, 15, 10, 30, 0, tzinfo=timezone.utc)
+    calls_params = []
+
+    with patch("httpx.Client") as mock_client_cls, \
+         patch.object(connector, "_enqueue_embed"):
+        mock_ctx = MagicMock()
+        mock_client_cls.return_value.__enter__ = lambda s: mock_ctx
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        def capture_get(url, params=None, **kwargs):
+            calls_params.append(params or {})
+            return _build_shopify_resp([])
+
+        mock_ctx.get.side_effect = capture_get
+
+        connector.sync_incremental(since)
+
+    assert calls_params, "No se llamó a client.get"
+    assert calls_params[0].get("updated_at_min") == "2026-03-15T10:30:00"
+    assert calls_params[0].get("status") == "any"
+
+
+def test_sync_incremental_actualiza_producto_existente(db, tenant_a):
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    connector = _make_connector(db, tenant, config)
+    connector.configure(_CREDS)
+
+    # Crear producto existente primero
+    resp1 = _build_shopify_resp([_FAKE_PRODUCT_SHOPIFY])
+    with patch("httpx.Client") as mock_client_cls, \
+         patch.object(connector, "_enqueue_embed"):
+        mock_ctx = MagicMock()
+        mock_client_cls.return_value.__enter__ = lambda s: mock_ctx
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_ctx.get.return_value = resp1
+        connector.sync_full()
+
+    # Sync incremental actualiza
+    modificado = {**_FAKE_PRODUCT_SHOPIFY, "title": "Remera Actualizada"}
+    resp2 = _build_shopify_resp([modificado])
+    with patch("httpx.Client") as mock_client_cls, \
+         patch.object(connector, "_enqueue_embed"):
+        mock_ctx = MagicMock()
+        mock_client_cls.return_value.__enter__ = lambda s: mock_ctx
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_ctx.get.return_value = resp2
+        result = connector.sync_incremental(datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    assert result.items_updated == 1
+    p = db.query(Product).filter(
+        Product.tenant_id == tenant.id,
+        Product.external_id == "99",
+    ).first()
+    assert p.name == "Remera Actualizada"
+
+
+# ── Tests de verify_webhook ───────────────────────────────────────────────────
+
+
+def test_verify_webhook_firma_valida(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant, secret="mi_secreto_shopify")
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    payload = b'{"id": 1}'
+    sig = _sign_shopify_payload(payload, "mi_secreto_shopify")
+    result = connector.verify_webhook(payload, {"x-shopify-hmac-sha256": sig})
+
+    assert result.valid is True
+
+
+def test_verify_webhook_firma_invalida(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant, secret="mi_secreto_shopify")
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    result = connector.verify_webhook(b'{"id": 1}', {"x-shopify-hmac-sha256": "firma_falsa_AAAA=="})
+
+    assert result.valid is False
+    assert "inválida" in result.reason
+
+
+def test_verify_webhook_header_ausente(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    result = connector.verify_webhook(b'{}', {})
+
+    assert result.valid is False
+    assert "ausente" in result.reason
+
+
+# ── Tests de webhook_handler — productos ──────────────────────────────────────
+
+
+def test_webhook_handler_products_create(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    with patch.object(connector, "_enqueue_embed"):
+        connector.webhook_handler(
+            _FAKE_PRODUCT_SHOPIFY,
+            {"x-shopify-topic": "products/create"},
+        )
+
+    product = (
+        db.query(Product)
+        .filter(Product.tenant_id == tenant.id, Product.external_id == "99")
+        .first()
+    )
+    assert product is not None
+    assert product.name == "Remera Shopify"
+    assert product.sku == "SHOP-SHIRT-M"
+
+
+def test_webhook_handler_products_update_actualiza(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    # Crear primero
+    stats: dict = {"created": 0, "updated": 0}
+    connector._upsert_product(_FAKE_PRODUCT_SHOPIFY, stats)
+    db.flush()
+
+    modificado = {**_FAKE_PRODUCT_SHOPIFY, "title": "Remera Modificada"}
+    with patch.object(connector, "_enqueue_embed"):
+        connector.webhook_handler(modificado, {"x-shopify-topic": "products/update"})
+
+    p = db.query(Product).filter(
+        Product.tenant_id == tenant.id, Product.external_id == "99"
+    ).first()
+    assert p.name == "Remera Modificada"
+
+
+def test_webhook_handler_products_delete_soft_delete(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    stats: dict = {"created": 0, "updated": 0}
+    connector._upsert_product(_FAKE_PRODUCT_SHOPIFY, stats)
+    db.flush()
+
+    connector.webhook_handler({"id": 99}, {"x-shopify-topic": "products/delete"})
+
+    p = db.query(Product).filter(
+        Product.tenant_id == tenant.id, Product.external_id == "99"
+    ).first()
+    assert p.deleted_at is not None
+
+
+def test_webhook_handler_products_delete_no_existente_no_falla(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    # No debe lanzar aunque el producto no exista
+    connector.webhook_handler({"id": 9999}, {"x-shopify-topic": "products/delete"})
+
+
+def test_webhook_handler_products_create_encola_embed(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    with patch.object(connector, "_enqueue_embed") as mock_enqueue:
+        connector.webhook_handler(
+            _FAKE_PRODUCT_SHOPIFY,
+            {"x-shopify-topic": "products/create"},
+        )
+        mock_enqueue.assert_called_once()
+
+
+# ── Tests de webhook_handler — órdenes ───────────────────────────────────────
+
+
+def test_webhook_handler_orders_create(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    connector.webhook_handler(_FAKE_ORDER_SHOPIFY, {"x-shopify-topic": "orders/create"})
+
+    order = (
+        db.query(Order)
+        .filter(Order.tenant_id == tenant.id, Order.external_id == "888")
+        .first()
+    )
+    assert order is not None
+    assert order.status == "paid"
+    assert order.customer_email == "cliente@shopify.com"
+    assert float(order.total) == 55.0
+
+
+def test_webhook_handler_orders_updated(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    # Crear orden preexistente
+    order = Order(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        connector_config_id=config.id,
+        external_id="888",
+        status="pending",
+    )
+    db.add(order)
+    db.flush()
+
+    updated = {**_FAKE_ORDER_SHOPIFY, "financial_status": "refunded"}
+    connector.webhook_handler(updated, {"x-shopify-topic": "orders/updated"})
+
+    db.refresh(order)
+    assert order.status == "refunded"
+
+
+def test_webhook_handler_topic_desconocido_no_falla(db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant)
+    connector = ShopifyConnector(tenant.id, config.id, db=db)
+
+    # No debe lanzar excepción
+    connector.webhook_handler({}, {"x-shopify-topic": "app/uninstalled"})
+
+
+# ── Tests de endpoint webhook HTTP ───────────────────────────────────────────
+
+
+def _make_shopify_request(client, tenant_id, config_id, payload: dict, secret: str, topic: str = "products/update"):
+    body = json.dumps(payload).encode()
+    sig = _sign_shopify_payload(body, secret)
+    return client.post(
+        f"/webhooks/shopify/{tenant_id}/{config_id}",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Shopify-Hmac-Sha256": sig,
+            "X-Shopify-Topic": topic,
+        },
+    )
+
+
+def test_endpoint_shopify_webhook_200_ok(client_a, db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant, secret="secreto_a")
+
+    with patch("src.connectors.shopify.webhook.ShopifyConnector") as MockConnector:
+        mock_conn = MagicMock()
+        mock_conn.verify_webhook.return_value = MagicMock(valid=True)
+        mock_conn.webhook_handler.return_value = None
+        MockConnector.return_value = mock_conn
+
+        body = json.dumps({"id": 42}).encode()
+        sig = _sign_shopify_payload(body, "secreto_a")
+
+        r = client_a.post(
+            f"/webhooks/shopify/{tenant.id}/{config.id}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Shopify-Hmac-Sha256": sig,
+                "X-Shopify-Topic": "products/update",
+            },
+        )
+
+    assert r.status_code == 200
+    assert r.json()["received"] is True
+
+
+def test_endpoint_shopify_webhook_401_firma_invalida(client_a, db, tenant_a):
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant, secret="secreto_real")
+
+    body = json.dumps({"id": 42}).encode()
+    r = client_a.post(
+        f"/webhooks/shopify/{tenant.id}/{config.id}",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Shopify-Hmac-Sha256": "ZmlybWFfZmFsc2E=",
+            "X-Shopify-Topic": "products/update",
+        },
+    )
+
+    assert r.status_code == 401
+
+
+def test_endpoint_shopify_webhook_404_config_no_existe(client_a, db, tenant_a):
+    tenant, _ = tenant_a
+    body = json.dumps({"id": 1}).encode()
+    fake_config_id = uuid.uuid4()
+
+    r = client_a.post(
+        f"/webhooks/shopify/{tenant.id}/{fake_config_id}",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Shopify-Hmac-Sha256": "ZmlybWFfZmFsc2E=",
+        },
+    )
+
+    assert r.status_code == 404
+
+
+def test_endpoint_shopify_webhook_product_created_end_to_end(client_a, db, tenant_a):
+    """Test E2E: el endpoint persiste el producto sin mock del conector."""
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant, secret="secreto_e2e")
+
+    payload = {**_FAKE_PRODUCT_SHOPIFY, "id": 300, "handle": "remera-e2e"}
+    body = json.dumps(payload).encode()
+    sig = _sign_shopify_payload(body, "secreto_e2e")
+
+    with patch("src.connectors.shopify.connector.ShopifyConnector._enqueue_embed"):
+        r = client_a.post(
+            f"/webhooks/shopify/{tenant.id}/{config.id}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Shopify-Hmac-Sha256": sig,
+                "X-Shopify-Topic": "products/create",
+            },
+        )
+
+    assert r.status_code == 200
+
+    product = (
+        db.query(Product)
+        .filter(Product.tenant_id == tenant.id, Product.external_id == "300")
+        .first()
+    )
+    assert product is not None
+    assert product.name == "Remera Shopify"
+
+
+def test_endpoint_shopify_webhook_aislamiento_tenant(client_b, db, tenant_a):
+    """Tenant B con tenant_id distinto al de la config → 404."""
+    tenant, _ = tenant_a
+    config = _make_config_with_secret(db, tenant, secret="secreto_a")
+
+    body = json.dumps({"id": 1}).encode()
+    sig = _sign_shopify_payload(body, "secreto_a")
+    fake_tenant_b_id = uuid.uuid4()
+
+    r = client_b.post(
+        f"/webhooks/shopify/{fake_tenant_b_id}/{config.id}",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Shopify-Hmac-Sha256": sig,
+            "X-Shopify-Topic": "products/create",
+        },
+    )
+
+    assert r.status_code == 404
+
+
+# ── Tests búsqueda semántica híbrida ─────────────────────────────────────────
+
+
+def test_search_semantica_con_embedding(db, tenant_a):
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    product = Product(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        connector_config_id=config.id,
+        external_id="99",
+        sku="SHOP-SHIRT-M",
+        name="Remera Shopify",
+        description_short="Remera de algodón",
+        price_regular=39.99,
+        price_sale=29.99,
+        stock_quantity=50,
+        stock_status="in_stock",
+        embedding=[0.9] + [0.0] * 1023,
+    )
+    db.add(product)
+    db.flush()
+
+    fake_query_vector = [0.9] + [0.0] * 1023
+    connector = _make_connector(db, tenant, config)
+
+    with patch("src.connectors.shopify.connector.get_settings") as mock_settings, \
+         patch("src.connectors.shopify.connector.embed_texts", return_value=[fake_query_vector]):
+        mock_settings.return_value.voyage_api_key = "vk_test"
+        results = connector.search("tela suave", top_k=5)
+
+    assert len(results) >= 1
+    assert any(r.id == str(product.id) for r in results)
+
+
+def test_search_excluye_productos_eliminados(db, tenant_a):
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+
+    eliminado = Product(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        connector_config_id=config.id,
+        external_id="200",
+        name="Remera Borrada",
+        deleted_at=datetime.now(timezone.utc),
+    )
+    activo = Product(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        connector_config_id=config.id,
+        external_id="201",
+        name="Remera Activa",
+    )
+    db.add_all([eliminado, activo])
+    db.flush()
+
+    connector = _make_connector(db, tenant, config)
+    with patch("src.connectors.shopify.connector.get_settings") as mock_settings:
+        mock_settings.return_value.voyage_api_key = ""
+        results = connector.search("Remera")
+
+    titles = [r.title for r in results]
+    assert "Remera Borrada" not in titles
+    assert "Remera Activa" in titles
+
+
+def test_rrf_merge_combina_listas():
+    a = uuid.uuid4()
+    b = uuid.uuid4()
+    c = uuid.uuid4()
+
+    keyword = [(a, 1.0), (b, 1.0)]
+    semantic = [(b, 0.95), (c, 0.80)]
+
+    merged = _rrf_merge(keyword, semantic, top_k=3)
+    ids = [pid for pid, _ in merged]
+
+    assert b in ids  # b aparece en ambas listas → score más alto
+
+
+def test_rrf_merge_top_k():
+    items = [(uuid.uuid4(), float(i)) for i in range(10)]
+    merged = _rrf_merge(items, [], top_k=3)
+    assert len(merged) == 3
+
+
+# ── Tests de buscar_productos usando search() semántica ──────────────────────
+
+
+def test_tool_buscar_productos_usa_search_semantico(db, tenant_a):
+    """buscar_productos llama connector.search() (búsqueda híbrida) y no ILIKE directo."""
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    _seed_product(db, tenant, config)
+
+    with patch("src.connectors.shopify.connector.get_settings") as mock_settings, \
+         patch("src.connectors.shopify.connector.embed_texts") as mock_embed:
+        mock_settings.return_value.voyage_api_key = "vk_test_key"
+        fake_vec = [0.5] * 1024
+        mock_embed.return_value = [fake_vec]
+
+        result = buscar_productos(
+            query="Remera",
+            max_results=5,
+            tenant_id=tenant.id,
+            config_id=config.id,
+            db=db,
+        )
+
+    # embed_texts fue llamado → path semántico activado
+    mock_embed.assert_called_once()
+    assert len(result["resultados"]) == 1
+    assert result["resultados"][0]["nombre"] == "Remera Shopify"
+
+
+def test_tool_buscar_productos_fallback_sin_api_key(db, tenant_a):
+    """buscar_productos funciona con keyword-only cuando no hay VOYAGE_API_KEY."""
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    _seed_product(db, tenant, config)
+
+    with patch("src.connectors.shopify.connector.get_settings") as mock_settings:
+        mock_settings.return_value.voyage_api_key = ""
+        result = buscar_productos(
+            query="Remera",
+            max_results=5,
+            tenant_id=tenant.id,
+            config_id=config.id,
+            db=db,
+        )
+
+    assert len(result["resultados"]) == 1
+    assert result["resultados"][0]["nombre"] == "Remera Shopify"
+
+
+# ── Tests de tasks (embed_product Shopify) ────────────────────────────────────
+
+
+def test_shopify_embed_product_genera_embedding():
+    fake_product = MagicMock()
+    fake_product.name = "Remera Test"
+    fake_product.description_short = "Algodón"
+    fake_product.description_long = ""
+    fake_product.sku = "T001"
+    fake_product.categories = []
+    fake_product.attributes = {}
+
+    mock_db = MagicMock()
+    mock_db.get.return_value = fake_product
+    fake_vector = [0.1] * 1024
+
+    with patch("src.connectors.shopify.tasks.embed_texts", return_value=[fake_vector]), \
+         patch("src.connectors.shopify.tasks.get_db_session") as mock_ctx, \
+         patch("src.connectors.shopify.tasks.get_settings") as mock_settings:
+
+        mock_settings.return_value.voyage_api_key = "vk_test_key"
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        from src.connectors.shopify.tasks import embed_product
+        result = embed_product.run(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()))
+
+    assert result["ok"] is True
+    assert fake_product.embedding == fake_vector
+
+
+def test_shopify_embed_product_skip_sin_api_key():
+    with patch("src.connectors.shopify.tasks.get_settings") as mock_settings:
+        mock_settings.return_value.voyage_api_key = ""
+
+        from src.connectors.shopify.tasks import embed_product
+        result = embed_product.run(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()))
+
+    assert result["ok"] is False
+    assert result["reason"] == "sin_api_key"
+
+
+def test_shopify_build_product_text_construye_texto(db, tenant_a):
+    tenant, _ = tenant_a
+    defn = _make_shopify_def(db)
+    config = _make_config(db, tenant, defn)
+    p = Product(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        connector_config_id=config.id,
+        external_id="555",
+        name="Zapatilla",
+        description_short="Cómoda",
+        description_long="Muy cómoda",
+        sku="ZAP-001",
+        categories=["Calzado"],
+    )
+    db.add(p)
+    db.flush()
+
+    text_out = _build_product_text(p)
+
+    assert "Zapatilla" in text_out
+    assert "Cómoda" in text_out
+    assert "ZAP-001" in text_out
+    assert "Calzado" in text_out
+
+
+# ── Tests de registry ─────────────────────────────────────────────────────────
+
+
+def test_shopify_en_registry():
+    from src.connectors.registry import get_registry
+    reg = get_registry()
+    assert "shopify" in reg
+    assert reg["shopify"] is ShopifyConnector

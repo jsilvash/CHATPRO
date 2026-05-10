@@ -307,16 +307,36 @@ class TestBuscarProductos:
         return p
 
     def test_retorna_campos_requeridos(self):
+        """buscar_productos delega en WooCommerceConnector.search() (Fase 18)."""
         product = self._make_product()
-        session = MagicMock()
-        session.query.return_value.filter.return_value.limit.return_value.all.return_value = [product]
-
-        result = buscar_productos(
-            query="zapatilla",
-            tenant_id=TENANT_ID,
-            config_id=CONFIG_ID,
-            db=session,
+        fake_result = SearchResult(
+            id=str(product.id),
+            title=product.name,
+            snippet=product.description_short,
+            url=product.url,
+            score=0.016,
+            metadata={
+                "sku": product.sku,
+                "external_id": product.external_id,
+                "price_regular": float(product.price_regular),
+                "price_sale": None,
+                "currency": product.currency,
+                "stock_quantity": product.stock_quantity,
+                "stock_status": product.stock_status,
+            },
         )
+
+        with patch("src.connectors.woocommerce.connector.WooCommerceConnector") as MockConn:
+            mock_conn = MagicMock()
+            mock_conn.search.return_value = [fake_result]
+            MockConn.return_value = mock_conn
+
+            result = buscar_productos(
+                query="zapatilla",
+                tenant_id=TENANT_ID,
+                config_id=CONFIG_ID,
+                db=MagicMock(),
+            )
 
         assert "resultados" in result
         assert len(result["resultados"]) == 1
@@ -325,15 +345,17 @@ class TestBuscarProductos:
         assert r["stock_status"] == "in_stock"
 
     def test_sin_resultados_retorna_mensaje(self):
-        session = MagicMock()
-        session.query.return_value.filter.return_value.limit.return_value.all.return_value = []
+        with patch("src.connectors.woocommerce.connector.WooCommerceConnector") as MockConn:
+            mock_conn = MagicMock()
+            mock_conn.search.return_value = []
+            MockConn.return_value = mock_conn
 
-        result = buscar_productos(
-            query="xyzzy_inexistente",
-            tenant_id=TENANT_ID,
-            config_id=CONFIG_ID,
-            db=session,
-        )
+            result = buscar_productos(
+                query="xyzzy_inexistente",
+                tenant_id=TENANT_ID,
+                config_id=CONFIG_ID,
+                db=MagicMock(),
+            )
 
         assert "resultados" in result
         assert result["resultados"] == []

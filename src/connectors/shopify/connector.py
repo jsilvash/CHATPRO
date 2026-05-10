@@ -1,14 +1,14 @@
-"""ShopifyConnector — implementación para Fase 12.
+"""ShopifyConnector — implementación completa (Fase 18).
 
 Implementa:
 - configure()        — persiste y cifra shop_url + access_token; valida campos requeridos.
 - test_connection()  — llama GET /admin/api/2024-01/shop.json para validar credenciales.
 - sync_full()        — pagina /admin/api/2024-01/products.json con cursor y persiste en ``products``.
-- sync_incremental() — placeholder (fase futura).
+- sync_incremental() — pagina con updated_at_min=since usando cursor.
 - verify_webhook()   — verifica HMAC-SHA256 (X-Shopify-Hmac-Sha256).
-- webhook_handler()  — placeholder (fase futura).
+- webhook_handler()  — procesa products/orders según X-Shopify-Topic.
 - expose_tools()     — 2 tools semánticos para el agente.
-- search()           — búsqueda full-text sobre ``products`` en BD local.
+- search()           — búsqueda híbrida pgvector + keyword con RRF (igual que WooCommerce).
 """
 
 import hashlib
@@ -22,7 +22,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy import text
 
+from src.config import get_settings
 from src.connectors.base import (
     Connector,
     SearchResult,
@@ -31,7 +33,8 @@ from src.connectors.base import (
     WebhookVerification,
 )
 from src.connectors.crypto import decrypt_credentials, encrypt_credentials
-from src.connectors.models import ConnectorConfig, ConnectorDef, Product
+from src.connectors.embeddings import embed_texts
+from src.connectors.models import ConnectorConfig, ConnectorDef, Order, Product
 from src.db.session import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -158,7 +161,11 @@ class ShopifyConnector(Connector):
         errors: list[str] = []
 
         try:
-            self._sync_products_pages(stats, errors)
+            self._sync_products_pages(
+                stats,
+                errors,
+                initial_params={"limit": _PAGE_SIZE, "status": "active"},
+            )
         except Exception as exc:
             errors.append(f"Error fatal en sync_full: {exc}")
             logger.exception("sync_full Shopify falló")
@@ -180,9 +187,14 @@ class ShopifyConnector(Connector):
             finished_at=finished_at,
         )
 
-    def _sync_products_pages(self, stats: dict, errors: list[str]) -> None:
+    def _sync_products_pages(
+        self,
+        stats: dict,
+        errors: list[str],
+        initial_params: dict | None = None,
+    ) -> None:
         """Pagina usando cursor (Link header) de Shopify."""
-        params: dict = {"limit": _PAGE_SIZE, "status": "active"}
+        params: dict = initial_params or {"limit": _PAGE_SIZE, "status": "active"}
         with self._build_client() as client:
             while True:
                 try:
@@ -199,7 +211,8 @@ class ShopifyConnector(Connector):
 
                 for raw_product in items:
                     try:
-                        self._upsert_product(raw_product, stats)
+                        product = self._upsert_product(raw_product, stats)
+                        self._enqueue_embed(product)
                     except Exception as exc:
                         errors.append(f"Producto {raw_product.get('id')}: {exc}")
 
@@ -209,13 +222,14 @@ class ShopifyConnector(Connector):
                 next_url = _parse_next_link(resp.headers.get("Link", ""))
                 if not next_url:
                     break
-                # Extraer page_info del next_url y usar en la siguiente petición
                 page_info = _extract_page_info(next_url)
                 if not page_info:
                     break
+                # Con page_info solo se pasa limit y page_info (no otros filtros)
                 params = {"limit": _PAGE_SIZE, "page_info": page_info}
 
-    def _upsert_product(self, raw: dict, stats: dict) -> None:
+    def _upsert_product(self, raw: dict, stats: dict) -> Product:
+        """Inserta o actualiza un producto. Retorna la instancia ORM."""
         external_id = str(raw["id"])
         shop_url = self._load_credentials()["shop_url"].rstrip("/")
         with self._get_db() as db:
@@ -239,12 +253,76 @@ class ShopifyConnector(Connector):
                 for k, v in product_data.items():
                     if k not in ("id", "created_at"):
                         setattr(existing, k, v)
+                product = existing
                 stats["updated"] += 1
 
             if self._db_session is None:
                 db.commit()
             else:
                 db.flush()
+
+            return product
+
+    def _upsert_order(self, raw: dict) -> Order:
+        """Inserta o actualiza una orden desde payload de webhook Shopify."""
+        external_id = str(raw.get("id", ""))
+        with self._get_db() as db:
+            existing = (
+                db.query(Order)
+                .filter(
+                    Order.tenant_id == self.tenant_id,
+                    Order.connector_config_id == self.config_id,
+                    Order.external_id == external_id,
+                )
+                .first()
+            )
+
+            # Shopify: email puede estar en raíz o en customer.email
+            customer_email = raw.get("email") or (
+                raw.get("customer") or {}
+            ).get("email")
+            total = _to_decimal(raw.get("current_total_price") or raw.get("total_price"))
+            # Status compuesto: financial_status + fulfillment_status
+            status = raw.get("financial_status") or raw.get("fulfillment_status") or raw.get("status")
+
+            order_data = {
+                "tenant_id": self.tenant_id,
+                "connector_config_id": self.config_id,
+                "external_id": external_id,
+                "status": status,
+                "total": total,
+                "currency": raw.get("currency"),
+                "customer_email": customer_email,
+                "raw": raw,
+                "updated_at": datetime.now(timezone.utc),
+            }
+
+            if existing is None:
+                order = Order(id=uuid.uuid4(), **order_data)
+                db.add(order)
+            else:
+                for k, v in order_data.items():
+                    setattr(existing, k, v)
+                order = existing
+
+            if self._db_session is None:
+                db.commit()
+            else:
+                db.flush()
+
+            return order
+
+    def _enqueue_embed(self, product: Product) -> None:
+        """Encola la tarea Celery embed_product para el producto dado."""
+        try:
+            from src.connectors.shopify.tasks import embed_product
+            embed_product.delay(
+                str(product.id),
+                str(self.tenant_id),
+                str(self.config_id),
+            )
+        except Exception as exc:
+            logger.warning("No se pudo encolar embed_product para %s: %s", product.id, exc)
 
     def _update_config_sync_ok(self) -> None:
         with self._get_db() as db:
@@ -269,16 +347,43 @@ class ShopifyConnector(Connector):
                 else:
                     db.flush()
 
-    # ── sync_incremental (fase futura) ────────────────────────────────────────
+    # ── sync_incremental ──────────────────────────────────────────────────────
 
     def sync_incremental(self, since: datetime) -> SyncResult:
+        """Pagina /products.json?updated_at_min=since y upserta cambios."""
         started_at = datetime.now(timezone.utc)
+        stats = {"processed": 0, "created": 0, "updated": 0, "deleted": 0}
+        errors: list[str] = []
+
+        since_str = since.strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            self._sync_products_pages(
+                stats,
+                errors,
+                initial_params={
+                    "limit": _PAGE_SIZE,
+                    "status": "any",
+                    "updated_at_min": since_str,
+                },
+            )
+            with self._get_db() as db:
+                config = db.get(ConnectorConfig, self.config_id)
+                if config:
+                    config.last_incremental_sync_at = datetime.now(timezone.utc)
+                    if self._db_session is None:
+                        db.commit()
+                    else:
+                        db.flush()
+        except Exception as exc:
+            errors.append(f"Error en sync_incremental: {exc}")
+            logger.exception("sync_incremental Shopify falló")
+
         return SyncResult(
-            items_processed=0,
-            items_created=0,
-            items_updated=0,
-            items_deleted=0,
-            errors=["sync_incremental no implementado aún (fase futura)"],
+            items_processed=stats["processed"],
+            items_created=stats["created"],
+            items_updated=stats["updated"],
+            items_deleted=stats["deleted"],
+            errors=errors,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
         )
@@ -306,21 +411,52 @@ class ShopifyConnector(Connector):
 
         return WebhookVerification(valid=True)
 
-    # ── webhook_handler (fase futura) ─────────────────────────────────────────
+    # ── webhook_handler ───────────────────────────────────────────────────────
 
     def webhook_handler(self, payload: dict, headers: dict[str, str]) -> None:
-        pass
+        """Despacha eventos de Shopify según X-Shopify-Topic."""
+        topic = headers.get("x-shopify-topic", "")
+
+        if topic in ("products/create", "products/update"):
+            stats: dict = {"created": 0, "updated": 0}
+            product = self._upsert_product(payload, stats)
+            self._enqueue_embed(product)
+
+        elif topic == "products/delete":
+            external_id = str(payload.get("id", ""))
+            with self._get_db() as db:
+                p = (
+                    db.query(Product)
+                    .filter(
+                        Product.tenant_id == self.tenant_id,
+                        Product.connector_config_id == self.config_id,
+                        Product.external_id == external_id,
+                    )
+                    .first()
+                )
+                if p:
+                    p.deleted_at = datetime.now(timezone.utc)
+                    if self._db_session is None:
+                        db.commit()
+                    else:
+                        db.flush()
+
+        elif topic in ("orders/create", "orders/updated"):
+            self._upsert_order(payload)
+
+        else:
+            logger.debug("webhook_handler Shopify: topic desconocido '%s', ignorado.", topic)
 
     # ── expose_tools ──────────────────────────────────────────────────────────
 
     def expose_tools(self) -> list[ToolSchema]:
         return [
             ToolSchema(
-                name="shopify_buscar_productos",
+                name="buscar_productos",
                 description=(
-                    "Busca productos del catálogo Shopify del negocio por nombre, "
-                    "descripción o SKU. Devuelve nombre, precio, stock y link. Úsalo "
-                    "cuando el cliente pregunte por un producto o servicio."
+                    "Busca productos del catálogo del negocio por nombre, descripción o "
+                    "categoría. Devuelve nombre, precio, stock y link. Úsalo cuando el "
+                    "cliente pregunte por un producto o servicio."
                 ),
                 input_schema={
                     "type": "object",
@@ -337,11 +473,11 @@ class ShopifyConnector(Connector):
                 callable_ref="connectors.shopify.tools:buscar_productos",
             ),
             ToolSchema(
-                name="shopify_consultar_stock_y_precio",
+                name="consultar_stock_y_precio",
                 description=(
-                    "Consulta stock disponible, precio y link de un producto Shopify "
-                    "específico por SKU o ID de producto. Úsalo cuando el cliente "
-                    "pregunte por disponibilidad o precio exacto de un ítem."
+                    "Consulta stock disponible, precio y link de un producto específico "
+                    "por SKU o ID de producto. Úsalo cuando el cliente pregunte por "
+                    "disponibilidad o precio exacto de un ítem."
                 ),
                 input_schema={
                     "type": "object",
@@ -357,7 +493,7 @@ class ShopifyConnector(Connector):
             ),
         ]
 
-    # ── search ────────────────────────────────────────────────────────────────
+    # ── search (búsqueda híbrida pgvector + keyword + RRF) ────────────────────
 
     def search(
         self,
@@ -365,33 +501,52 @@ class ShopifyConnector(Connector):
         top_k: int = 10,
         filters: dict | None = None,
     ) -> list[SearchResult]:
-        """Búsqueda full-text sobre productos en BD local."""
-        results: list[SearchResult] = []
-        with self._get_db() as db:
-            q = (
-                db.query(Product)
-                .filter(
-                    Product.tenant_id == self.tenant_id,
-                    Product.connector_config_id == self.config_id,
-                    Product.deleted_at.is_(None),
-                )
-                .filter(
-                    Product.name.ilike(f"%{query}%")
-                    | Product.description_short.ilike(f"%{query}%")
-                    | Product.sku.ilike(f"%{query}%"),
-                )
-                .limit(top_k)
-                .all()
-            )
+        """Búsqueda híbrida pgvector (coseno) + keyword (ILIKE) con RRF.
 
-            for p in q:
+        Si VOYAGE_API_KEY está configurada, genera embedding de la query y
+        combina los resultados semánticos con los de keyword vía Reciprocal
+        Rank Fusion. Si no hay API key, cae a búsqueda de texto puro.
+        """
+        settings = get_settings()
+        query_embedding: list[float] | None = None
+
+        if settings.voyage_api_key:
+            try:
+                vectors = embed_texts([query], settings.voyage_api_key)
+                query_embedding = vectors[0]
+            except Exception as exc:
+                logger.warning("Shopify search: no se pudo generar embedding de query: %s", exc)
+
+        with self._get_db() as db:
+            keyword_results = self._keyword_search(db, query, top_k)
+            semantic_results: list[tuple[uuid.UUID, float]] = []
+
+            if query_embedding is not None:
+                semantic_results = self._vector_search(db, query_embedding, top_k)
+
+            merged = _rrf_merge(keyword_results, semantic_results, top_k)
+
+            product_ids = [pid for pid, _ in merged]
+            if not product_ids:
+                return []
+
+            products_by_id = {
+                p.id: p
+                for p in db.query(Product).filter(Product.id.in_(product_ids)).all()
+            }
+
+            results: list[SearchResult] = []
+            for pid, score in merged:
+                p = products_by_id.get(pid)
+                if p is None:
+                    continue
                 results.append(
                     SearchResult(
                         id=str(p.id),
                         title=p.name,
                         snippet=p.description_short or "",
                         url=p.url,
-                        score=1.0,
+                        score=round(score, 4),
                         metadata={
                             "sku": p.sku,
                             "external_id": p.external_id,
@@ -404,6 +559,65 @@ class ShopifyConnector(Connector):
                     )
                 )
         return results
+
+    def _keyword_search(self, db, query: str, top_k: int) -> list[tuple[uuid.UUID, float]]:
+        rows = (
+            db.query(Product.id)
+            .filter(
+                Product.tenant_id == self.tenant_id,
+                Product.connector_config_id == self.config_id,
+                Product.deleted_at.is_(None),
+                Product.name.ilike(f"%{query}%")
+                | Product.description_short.ilike(f"%{query}%")
+                | Product.sku.ilike(f"%{query}%"),
+            )
+            .limit(top_k)
+            .all()
+        )
+        return [(row.id, 1.0) for row in rows]
+
+    def _vector_search(self, db, embedding: list[float], top_k: int) -> list[tuple[uuid.UUID, float]]:
+        vec_str = str(embedding)
+        rows = db.execute(
+            text(
+                "SELECT id, 1 - (embedding <=> CAST(:vec AS vector)) AS score "
+                "FROM products "
+                "WHERE tenant_id = :tid "
+                "  AND connector_config_id = :cid "
+                "  AND deleted_at IS NULL "
+                "  AND embedding IS NOT NULL "
+                "ORDER BY embedding <=> CAST(:vec AS vector) "
+                "LIMIT :k"
+            ),
+            {
+                "vec": vec_str,
+                "tid": str(self.tenant_id),
+                "cid": str(self.config_id),
+                "k": top_k,
+            },
+        ).fetchall()
+        return [(uuid.UUID(str(row[0])), float(row[1])) for row in rows]
+
+
+# ── Helpers de fusión RRF ──────────────────────────────────────────────────────
+
+def _rrf_merge(
+    keyword: list[tuple[uuid.UUID, float]],
+    semantic: list[tuple[uuid.UUID, float]],
+    top_k: int,
+    k: int = 60,
+) -> list[tuple[uuid.UUID, float]]:
+    """Reciprocal Rank Fusion: combina dos ranked lists en una sola."""
+    scores: dict[uuid.UUID, float] = {}
+
+    for rank, (pid, _) in enumerate(keyword):
+        scores[pid] = scores.get(pid, 0.0) + 1.0 / (k + rank + 1)
+
+    for rank, (pid, _) in enumerate(semantic):
+        scores[pid] = scores.get(pid, 0.0) + 1.0 / (k + rank + 1)
+
+    merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return merged[:top_k]
 
 
 # ── Helpers de mapeo ──────────────────────────────────────────────────────────
