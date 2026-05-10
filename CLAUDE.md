@@ -43,7 +43,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 24 | Webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar | ✅ Mergeada a main |
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
 | 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
-| 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ PR abierto |
+| 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ Mergeada a main |
+| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -241,140 +242,103 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Bulk actions en inbox | Tres endpoints declarados ANTES de `/{conv_id}` para evitar conflictos de routing: `POST /v1/inbox/bulk-assign` (valida que user_id sea del mismo tenant, 422 si no), `POST /v1/inbox/bulk-tag` (upsert idempotente de etiqueta), `POST /v1/inbox/bulk-close` (status→bot + registra ConversationStatusHistory). Convs de otro tenant se ignoran silenciosamente (no error). Respuesta uniforme `{updated: N, errors: []}`. | Fase 27 |
 | Stats de usuario (agente) | `GET /v1/users/{user_id}/stats` declarado DESPUÉS de `/available-agents` y ANTES de `/{user_id}`. Accesible por admin/owner O el propio usuario. Calcula: `conversations_active` (status agent\|waiting_agent), `conversations_today` (status bot + resolved_at=hoy), `avg_first_response_sec` (avg de first_response_at - created_at, null si sin datos), `notes_count` (notas del usuario). 404 si el user_id no pertenece al tenant. | Fase 27 |
 | Webhook events notas e historial | `note.created` emitido via `emit_event()` en `create_note` (inbox/api.py) después del commit. Payload: `{event, conversation_id, note_id, user_id, text_preview[:100], tenant_id}`. Fire-and-forget con try/except. `conversation.status_changed` emitido en `_auto_escalate_if_needed` (agent/service.py) usando la `db` ya existente del caller (no abre sesión nueva). | Fase 27 |
+| Dashboard métricas operativas | `GET /v1/metrics/dashboard` (diferente a `/v1/metrics/summary` existente en billing que es histórico). Módulo `src/api/v1/metrics_dashboard.py` registrado en router. Schema `TenantMetricsDashboard`: conversations_total/active/bot/closed_today, messages_in/out_today, agents_online, unassigned_waiting. Requiere auth (cualquier rol). Aislamiento con `bypass_tenant_filter` + filtro explicit tenant_id. | Fase 28 |
+| Deactivate user endpoint | `PATCH /v1/users/{user_id}/deactivate` en `src/api/v1/users.py`, declarado ANTES de `GET /{user_id}`. Solo admin/owner. 422 si autodesactivación. Reasigna convs activas vía `_find_agent_with_least_load()` (ya en service.py). Si no hay agentes → convs quedan `assigned_user_id=None`. Respuesta: `{deactivated_user_id, reassigned_conversations, new_assignee_id}`. | Fase 28 |
+| Export CSV inbox | `GET /v1/inbox/export` declarado ANTES de `/{conversation_id}` (mismo patrón que /bulk-*). Acepta mismos filtros que GET /v1/inbox. Sin paginación. Content-Type text/csv. Columnas: id, wa_contact_name, wa_contact_phone, status, assigned_user_id, created_at, last_message_at, resolved_at, tags, notes_count. Tags separadas por `\|`. | Fase 28 |
+| Búsqueda contactos | `GET /v1/contacts/search?q=&limit=` declarado ANTES de `/{contact_id}` en `src/contacts/api.py`. ILIKE en `phone_e164 OR display_name`. `conversations_count` calculado via COUNT en `WaConversation.contact_id`. Schema `ContactSearchOut`. Aislamiento por `current_user.tenant_id`. | Fase 28 |
 
 ---
 
-## Prompt de arranque — Fase 28 (siguiente prioridad del backlog)
+## Prompt de arranque — Fase 29 (siguiente prioridad del backlog)
 
 ```
-Retomo Fase 28 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Retomo Fase 29 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- Fase 27 (filtros inbox + bulk actions + stats usuario + webhook events notas) mergeada a main. PR #22.
-- Rama nueva: git fetch origin main && git checkout -b claude/phase28-XXXXX origin/main
-- Main contiene Fases 0-12 + 16 + 18-27 funcionales.
+- Fase 28 (dashboard métricas + deactivate user + export CSV + búsqueda contactos) mergeada a main. PR #23.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase29-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-28 funcionales.
 - Primero: leer SOLO CLAUDE.md (sección "Decisiones de arquitectura" y este prompt). Nada más.
 
-Estado tras Fase 27 (ya en main):
-  A. Filtros avanzados inbox:
-     - GET /v1/inbox acepta: ?assigned_user_id=, ?date_from=, ?date_to=, ?search= (ILIKE nombre/teléfono).
-     - Paginación mejorada: ?page=, ?page_size=; respuesta incluye total_pages = ceil(total/page_size).
-     - ConversationListResponse: {items, total, page, page_size, total_pages}.
-     - Tests en tests/test_fase27_inbox_filters.py (9 tests).
-  B. Bulk actions:
-     - POST /v1/inbox/bulk-assign → valida user_id mismo tenant (422 si no); convs ajenas ignoradas.
-     - POST /v1/inbox/bulk-tag → upsert idempotente de etiqueta en conversation_tags.
-     - POST /v1/inbox/bulk-close → status→bot + ConversationStatusHistory para cada conv.
-     - Respuesta uniforme: {updated: N, errors: []}.
-     - Tests en tests/test_fase27_bulk_actions.py (9 tests).
-  C. Stats de usuario:
-     - GET /v1/users/{user_id}/stats: conversations_active, conversations_today, avg_first_response_sec, notes_count.
-     - Acceso: admin/owner O propio usuario. 404 si user_id no es del tenant.
-     - Tests en tests/test_fase27_user_management.py (7 tests).
-  D. Webhook events notas:
-     - note.created emitido en create_note (inbox/api.py) vía emit_event() con try/except.
-     - conversation.status_changed emitido en _auto_escalate_if_needed (service.py) usando db del caller.
-     - Tests en tests/test_fase27_webhook_events.py (5 tests).
-  - Total: 30 tests nuevos, 0 regresiones.
+Estado tras Fase 28 (ya en main):
+  A. Dashboard de métricas operativas:
+     - GET /v1/metrics/dashboard: conversations_total/active/bot/closed_today,
+       messages_in/out_today, agents_online, unassigned_waiting.
+     - Módulo src/api/v1/metrics_dashboard.py registrado en router.
+     - Tests en tests/test_fase28_metrics_summary.py (7 tests).
+  B. Deactivate user con reasignación:
+     - PATCH /v1/users/{user_id}/deactivate: is_active=False + reasigna convs activas.
+     - Reasignación vía _find_agent_with_least_load(). Sin agentes → convs sin asignar.
+     - Respuesta: {deactivated_user_id, reassigned_conversations, new_assignee_id}.
+     - Tests en tests/test_fase28_user_deactivate.py (7 tests).
+  C. Export CSV inbox:
+     - GET /v1/inbox/export: mismos filtros que GET /v1/inbox, sin paginación.
+     - Content-Type text/csv, columnas: id, wa_contact_name, wa_contact_phone, status,
+       assigned_user_id, created_at, last_message_at, resolved_at, tags, notes_count.
+     - Tests en tests/test_fase28_inbox_export.py (7 tests).
+  D. Búsqueda de contactos:
+     - GET /v1/contacts/search?q=&limit=: ILIKE en phone_e164 OR display_name.
+     - Respuesta incluye conversations_count vía WaConversation.contact_id.
+     - Tests en tests/test_fase28_contact_search.py (7 tests).
+  - Total: 28 tests nuevos, 0 regresiones.
   - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
     (export_tenant_data importado localmente, no patcheable — no es regresión).
 
-Implementar las 4 opciones en ESTRICTO orden A→B→C→D SIN pausar entre ellas.
-Para cada opción: implementar código + tests + ejecutar los tests + avanzar solo si pasan.
+Opciones a implementar en Fase 29 (en ESTRICTO orden A→B→C→D SIN pausar):
+Para cada opción: implementar código + tests + ejecutar tests + avanzar solo si pasan.
 Comando de tests: DATABASE_URL=postgresql://chatpro:chatpro@localhost:5432/chatpro_test uv run pytest
 
 ────────────────────────────────────────────────────────────────
-OPCIÓN A — Dashboard de métricas del tenant (resumen ejecutivo)
+OPCIÓN A — Respuestas automáticas programadas (office hours)
 ────────────────────────────────────────────────────────────────
-- GET /v1/metrics/summary
-  Requiere auth (cualquier rol). Calcula para el tenant:
-    {
-      "conversations_total": int,         ← total de convs del tenant (todos los status)
-      "conversations_active": int,        ← convs con status in (agent, waiting_agent)
-      "conversations_bot": int,           ← convs con status = bot
-      "conversations_closed_today": int,  ← convs con resolved_at = hoy
-      "messages_in_today": int,           ← wa_messages con direction=in y created_at=hoy
-      "messages_out_today": int,          ← wa_messages con direction=out y created_at=hoy
-      "agents_online": int,               ← usuarios con role in (agent, admin) y is_active=True
-      "unassigned_waiting": int,          ← convs con status=waiting_agent y assigned_user_id=NULL
-    }
-- Aislamiento multi-tenant en todas las queries.
-- Tests en tests/test_fase28_metrics_summary.py (mínimo 6 tests):
-  • valores correctos con datos de test
-  • unassigned_waiting correcto
-  • conversations_closed_today usa resolved_at hoy
-  • aislamiento tenant
-  • usuario sin convs devuelve ceros (no error)
+- Tabla `office_hours` (migración nueva): tenant_id, wa_number_id FK nullable,
+  day_of_week (0-6, 0=lunes), hour_start (0-23), hour_end (0-23), is_active.
+- Si hay configuración activa para el número en la hora actual → bot atiende normalmente.
+- Si fuera de horario → respuesta automática configurable ("Estamos fuera de horario, atendemos de X a Y").
+- GET/POST/PUT/DELETE /v1/office-hours (CRUD completo).
+- Integración en webhook handler: si fuera de horario → respuesta y NO escalada.
+- Tests en tests/test_fase29_office_hours.py (mínimo 7 tests).
 
 ────────────────────────────────────────────────────────────────
-OPCIÓN B — PATCH /v1/users/{user_id}/deactivate
+OPCIÓN B — Conversaciones en espera con tiempo de espera
 ────────────────────────────────────────────────────────────────
-- PATCH /v1/users/{user_id}/deactivate
-  Requiere rol admin/owner. No permite desactivarse a sí mismo (422).
-  Acción:
-    1. Pone user.is_active = False.
-    2. Reasigna las convs activas del usuario (status agent|waiting_agent) al agente con menos carga
-       usando _find_agent_with_least_load() (ya existe en service.py).
-    3. Devuelve {deactivated_user_id, reassigned_conversations: N, new_assignee_id: uuid|null}.
-- Si no hay agente disponible → las convs quedan assigned_user_id=None (no error).
-- Aislamiento: user_id debe pertenecer al mismo tenant, sino 404.
-- Tests en tests/test_fase28_user_deactivate.py (mínimo 7 tests):
-  • deactivate pone is_active=False
-  • convs activas se reasignan al agente con menos carga
-  • sin agentes disponibles → convs quedan sin asignar
-  • no puede desactivarse a sí mismo → 422
-  • user_id de otro tenant → 404
-  • convs de otro tenant no se reasignan (aislamiento)
-  • respuesta contiene reassigned_conversations correcto
+- Añadir campo `waiting_since` (DateTime nullable) a WaConversation (migración).
+  Se setea cuando status pasa a waiting_agent, se limpia al pasar a agent.
+- GET /v1/inbox?sort=waiting_time: ordena por waiting_since ASC.
+- GET /v1/inbox/overdue?threshold_minutes=30: convs en waiting_agent > threshold.
+- ConversationSummary incluye `waiting_minutes: int | None`.
+- Tests en tests/test_fase29_waiting_time.py (mínimo 6 tests).
 
 ────────────────────────────────────────────────────────────────
-OPCIÓN C — Exportación de conversaciones del inbox (CSV)
+OPCIÓN C — Notas con menciones (@usuario)
 ────────────────────────────────────────────────────────────────
-- GET /v1/inbox/export
-  Requiere auth. Acepta mismos filtros que GET /v1/inbox (status, wa_number_id, tag,
-  assigned_user_id, date_from, date_to, search).
-  Devuelve: Content-Type: text/csv; filename=inbox_export.csv
-  Columnas: id, wa_contact_name, wa_contact_phone, status, assigned_user_id,
-            created_at, last_message_at, resolved_at, tags, notes_count
-  Aislamiento: solo convs del tenant actual.
-  Sin límite de paginación (exporta todo el resultado).
-- Declarar ANTES de /{conv_id} (igual que las rutas /bulk-*).
-- Tests en tests/test_fase28_inbox_export.py (mínimo 6 tests):
-  • respuesta tiene Content-Type text/csv
-  • filas corresponden a las convs del tenant
-  • filtros funcionan en export (assigned_user_id, search)
-  • aislamiento tenant: otro tenant no ve las convs
-  • columnas correctas en el CSV
-  • export vacío devuelve solo cabecera (no error)
+- Al crear una nota, parsear @email o @nombre en el texto.
+- Si el usuario mencionado existe en el tenant → notificar vía WS (NotificationManager).
+- Schema NotificationEvent para menciones: {event: "note.mention", note_id, conversation_id,
+  mentioned_user_id, author_user_id, text_preview, tenant_id}.
+- Payload en la nota: campo `mentions: list[uuid]` (IDs de usuarios mencionados).
+- Tests en tests/test_fase29_note_mentions.py (mínimo 6 tests).
 
 ────────────────────────────────────────────────────────────────
-OPCIÓN D — Búsqueda de contactos por teléfono/nombre
+OPCIÓN D — Métricas de agente con histórico (por período)
 ────────────────────────────────────────────────────────────────
-- GET /v1/contacts/search?q=<texto>&limit=20
-  Busca en contacts.phone_e164 OR contacts.display_name (ILIKE).
-  Devuelve lista de contactos con sus datos básicos y número de convs.
-  Respuesta: [{id, phone_e164, display_name, email, created_at, conversations_count}]
-  Aislamiento: solo contactos del tenant actual.
-- El endpoint debe declararse ANTES de /{contact_id} en el router de contacts
-  (seguir mismo patrón que /available-agents y /bulk-* en otros routers).
-- Tests en tests/test_fase28_contact_search.py (mínimo 6 tests):
-  • búsqueda por teléfono (ILIKE)
-  • búsqueda por nombre (case-insensitive)
-  • conversations_count correcto
-  • aislamiento tenant
-  • limit respetado
-  • sin resultados devuelve lista vacía (no error)
+- GET /v1/users/{user_id}/metrics?date_from=&date_to=
+  Calcula para el período:
+    {conversations_handled, avg_first_response_sec, avg_resolution_sec,
+     messages_sent, notes_created, busiest_hour (0-23)}
+  Acceso: admin/owner O propio usuario. 404 si no pertenece al tenant.
+- Tests en tests/test_fase29_agent_metrics.py (mínimo 6 tests).
 
 ────────────────────────────────────────────────────────────────
 Al cerrar (tras completar D y que todos los tests pasen):
   1. git add <archivos específicos>
-  2. git commit -m "feat(fase-28): dashboard métricas + deactivate user + export CSV + búsqueda contactos"
+  2. git commit -m "feat(fase-29): office hours + waiting time + menciones notas + métricas agente"
   3. git push -u origin <rama>
   4. Crear PR con descripción detallada de cada opción.
   5. Actualizar CLAUDE.md:
-     - Tabla de fases: Fase 27 → ✅ Mergeada a main, Fase 28 → ✅ PR abierto
-     - Agregar decisiones arquitectónicas de Fase 28 a la sección correspondiente
-     - Reemplazar "Prompt de arranque — Fase 28" con "Prompt de arranque — Fase 29"
-  6. Generar el prompt de arranque para Fase 29 (regla recursiva).
+     - Tabla de fases: Fase 28 → ✅ Mergeada a main, Fase 29 → ✅ PR abierto
+     - Agregar decisiones arquitectónicas de Fase 29
+     - Reemplazar "Prompt de arranque — Fase 29" con "Prompt de arranque — Fase 30"
+  6. Generar el prompt de arranque para Fase 30 (regla recursiva).
 
 NO tocar: src/knowledge/, src/connectors/ salvo indicación explícita.
 ```
