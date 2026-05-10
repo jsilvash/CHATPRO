@@ -10,9 +10,10 @@ Tablas:
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -184,6 +185,10 @@ class ConversationNote(Base):
         nullable=False,
     )
     text: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    # IDs de usuarios mencionados con @email/@nombre (Fase 29C). Lista de UUIDs en JSONB.
+    mentions: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
         nullable=False,

@@ -298,6 +298,141 @@ def get_user_stats(
     )
 
 
+# ── Métricas de agente con histórico (Fase 29D) ──────────────────────────────
+
+
+class AgentMetricsOut(BaseModel):
+    user_id: uuid.UUID
+    date_from: date
+    date_to: date
+    conversations_handled: int
+    avg_first_response_sec: float | None
+    avg_resolution_sec: float | None
+    messages_sent: int
+    notes_created: int
+    busiest_hour: int | None  # Hora (0-23) con más actividad saliente, o None si sin datos.
+
+
+@router.get("/{user_id}/metrics", response_model=AgentMetricsOut)
+def get_user_metrics(
+    user_id: uuid.UUID,
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentMetricsOut:
+    """Métricas históricas de un agente para un período.
+
+    Accesible por admin/owner o el propio usuario.
+    404 si el user_id no pertenece al tenant.
+    """
+    from datetime import timedelta
+
+    from src.inbox.models import ConversationNote
+    from src.wa.models import WaMessage
+
+    tenant_id = get_current_tenant_id()
+
+    with bypass_tenant_filter():
+        target = db.query(User).filter(
+            User.id == user_id,
+            User.tenant_id == tenant_id,
+        ).first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if current_user.role not in ("admin", "owner") and current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Sin permisos para ver estas métricas")
+
+    today = date.today()
+    df = date_from or (today - timedelta(days=30))
+    dt = date_to or today
+    df_dt = datetime(df.year, df.month, df.day, tzinfo=timezone.utc)
+    dt_dt = datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=timezone.utc)
+
+    with bypass_tenant_filter():
+        # Conversaciones manejadas: asignadas al usuario y resueltas en el período.
+        handled_convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.tenant_id == tenant_id,
+                WaConversation.assigned_user_id == user_id,
+                WaConversation.resolved_at.isnot(None),
+                WaConversation.resolved_at >= df_dt,
+                WaConversation.resolved_at <= dt_dt,
+            )
+            .all()
+        )
+
+        conversations_handled = len(handled_convs)
+
+        # Tiempos de respuesta y resolución.
+        first_resp_secs: list[float] = []
+        res_secs: list[float] = []
+        for c in handled_convs:
+            if c.first_response_at is not None:
+                delta = (c.first_response_at - c.created_at).total_seconds()
+                if delta >= 0:
+                    first_resp_secs.append(delta)
+            if c.resolved_at is not None:
+                delta = (c.resolved_at - c.created_at).total_seconds()
+                if delta >= 0:
+                    res_secs.append(delta)
+
+        avg_first = round(sum(first_resp_secs) / len(first_resp_secs), 2) if first_resp_secs else None
+        avg_res = round(sum(res_secs) / len(res_secs), 2) if res_secs else None
+
+        # Mensajes salientes en conversaciones asignadas al agente.
+        conv_ids = [c.id for c in handled_convs]
+        outbound_msgs = []
+        if conv_ids:
+            outbound_msgs = (
+                db.query(WaMessage)
+                .filter(
+                    WaMessage.tenant_id == tenant_id,
+                    WaMessage.wa_conversation_id.in_(conv_ids),
+                    WaMessage.direction == "out",
+                    WaMessage.created_at >= df_dt,
+                    WaMessage.created_at <= dt_dt,
+                )
+                .all()
+            )
+        messages_sent = len(outbound_msgs)
+
+        # Hora más ocupada (por mensajes salientes).
+        busiest_hour: int | None = None
+        if outbound_msgs:
+            hour_counts: dict[int, int] = {}
+            for msg in outbound_msgs:
+                h = msg.created_at.hour if msg.created_at else 0
+                hour_counts[h] = hour_counts.get(h, 0) + 1
+            busiest_hour = max(hour_counts, key=lambda k: hour_counts[k])
+
+        # Notas creadas por el agente en el período.
+        notes_created = (
+            db.query(func.count(ConversationNote.id))
+            .filter(
+                ConversationNote.tenant_id == tenant_id,
+                ConversationNote.user_id == user_id,
+                ConversationNote.created_at >= df_dt,
+                ConversationNote.created_at <= dt_dt,
+            )
+            .scalar()
+        ) or 0
+
+    return AgentMetricsOut(
+        user_id=user_id,
+        date_from=df,
+        date_to=dt,
+        conversations_handled=conversations_handled,
+        avg_first_response_sec=avg_first,
+        avg_resolution_sec=avg_res,
+        messages_sent=messages_sent,
+        notes_created=notes_created,
+        busiest_hour=busiest_hour,
+    )
+
+
 # ── Deactivate user (Fase 28B) ────────────────────────────────────────────────
 # Declarado ANTES de /{user_id} (GET) para evitar conflictos de routing.
 
