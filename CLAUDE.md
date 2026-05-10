@@ -48,6 +48,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
 | F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
 | F3 | Frontend: Dashboard operativo + gestión usuarios + contactos + SLA | ✅ PR abierto |
+| F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -259,48 +260,50 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Contactos frontend | `app/(app)/contacts/page.tsx`: búsqueda debounced (350ms) llamando `GET /v1/contacts/search`. `app/(app)/contacts/[contact_id]/page.tsx`: carga `GET /v1/contacts/{id}` + `GET /v1/contacts/{id}/facts` + lista inbox en paralelo; filtra convs por phone_e164. | Fase F3 |
 | SLA frontend | `app/(app)/sla/page.tsx`: `GET /v1/inbox/sla-report?date_from&date_to` con filtros de fecha. Formato plano del backend: `avg_first_response_seconds`, `p50_first_response_seconds`, etc. Muestra total y resueltas con % de resolución. | Fase F3 |
 | Nav F3 | `AppNav.tsx` añade rutas: `/users` (Users icon), `/contacts` (Phone icon), `/sla` (BarChart2 icon) con `isActive = pathname.startsWith(href)`. | Fase F3 |
+| Panel conectores | `app/(app)/connectors/page.tsx`: lista con cards (status badge, display_name, connector_name). Modal `CreateModal` con selección de tipo (WooCommerce/Shopify) + form credenciales. DELETE con confirm. Navega a `/connectors/{id}`. | Fase F4 |
+| Detalle conector | `app/(app)/connectors/[config_id]/page.tsx`: tabs Estadísticas / Buscar productos / Credenciales. StatsSection: products_count + orders_count + sync timestamps + botón sync. ProductSearchSection: form + resultados con score. ConfigureSection: form credenciales con campos tipo password para secrets. | Fase F4 |
+| Canned responses | `app/(app)/canned-responses/page.tsx`: lista con búsqueda debounced 350ms. CannedForm inline para create/edit. PreviewModal con render de variables. Acciones por item: preview, editar, eliminar. Detección de variables `{{nombre}}` en textarea con chips inline. | Fase F4 |
+| Dashboard SSE | `useMetricsSSE` hook en dashboard/page.tsx: EventSource a `/v1/metrics/stream?token=<jwt>`. Token obtenido de `/api/auth/ws-token`. onError: reconexión tras 10s. Actualiza `messages_in_today`, `messages_out_today`, `conversations_active` via overlay. Polling fallback cada 30s si SSE no conectado. Badge "En vivo" con `Radio` icon cuando SSE activo. | Fase F4 |
+| Nav F4 | `AppNav.tsx` añade rutas: `/connectors` (Plug icon), `/canned-responses` (Zap icon). | Fase F4 |
 
 ---
 
-## Prompt de arranque — Fase F4 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F5 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F4 — Frontend: Conectores + canned responses + métricas SSE + office hours.
+Retomo Fase F5 — Frontend: Office hours + números WA + personas + gestión inbox avanzada.
 Contexto:
-- Fase F3 (dashboard + usuarios + contactos + SLA) completada. PR abierto en rama claude/fase-f3-frontend-dashboard-UstvV.
-- Rama nueva: git checkout -b claude/fase-f4-frontend-XXXXX origin/main
+- Fase F4 (conectores + canned responses + métricas SSE) completada. PR abierto en rama claude/fase-f4-frontend-tMph5.
+- Rama nueva: git checkout -b claude/fase-f5-frontend-XXXXX origin/main
 - Main contiene backend Fases 0-28. Frontend en frontend/ con Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F3" y este prompt). Nada más.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F4" y este prompt). Nada más.
 
-Estado tras Fase F3 (ya en rama):
-  A. Dashboard operativo: /dashboard con widgets (GET /v1/metrics/dashboard), auto-refresh 30s.
-  B. Gestión usuarios: /users (lista + deactivate modal), /users/[id] (detalle + stats), /users/agents (carga round-robin).
-  C. Contactos: /contacts (búsqueda debounced), /contacts/[id] (detalle + facts + convs).
-  D. SLA: /sla (reporte con filtros fecha + avg/p50/p90 primera respuesta y resolución).
-  E. Nav: AppNav con rutas /dashboard, /inbox, /users, /contacts, /sla.
+Estado tras Fase F4 (ya en rama):
+  A. Conectores: /connectors (lista+crear+eliminar) y /connectors/[id] (stats+buscar+credenciales).
+  B. Canned responses: /canned-responses (CRUD + búsqueda debounced + modal preview variables).
+  C. Dashboard SSE: EventSource a /v1/metrics/stream + fallback polling 30s + badge "En vivo".
+  D. Nav: AppNav añade /connectors (Plug) y /canned-responses (Zap).
 
-Opciones a implementar en Fase F4 (en orden A → B → C → D):
-  A. Panel de conectores:
-     - Listar (GET /v1/connector-configs)
-     - Crear/editar/eliminar WooCommerce o Shopify
-     - Ver stats por conector (GET /v1/connector-configs/{id}/stats)
-     - Buscar productos (GET /v1/connector-configs/{id}/search?q=)
-  B. Canned responses (respuestas rápidas):
-     - CRUD (GET/POST/PATCH/DELETE /v1/canned-responses)
-     - Búsqueda (GET /v1/canned-responses/search?q=)
-     - Preview de variables (GET /v1/canned-responses/{id}/render?nombre=...)
-  C. Dashboard con métricas SSE en tiempo real:
-     - Conectar a GET /v1/metrics/stream (EventSource)
-     - Actualizar dashboard en tiempo real sin polling
-     - Fallback al polling existente si SSE falla
-  D. Gestión de office hours (si Fase 29 del backend está mergeada):
+Opciones a implementar en Fase F5 (en orden A → B → C → D):
+  A. Gestión de office hours (requiere Fase 29 backend mergeada):
      - CRUD /v1/office-hours
-     - Selección de número + días/horarios
+     - Selección de número WA + día de semana + hora inicio/fin
+  B. Panel números WA:
+     - Listar (GET /v1/wa-numbers), ver estado WAHA
+     - Métricas por número (GET /v1/wa-numbers/{id}/metrics con filtro fecha)
+     - Página /wa-numbers/[id] con métricas + top contacts
+  C. Gestión de personas (IA):
+     - CRUD /v1/personas (GET/POST/PATCH/DELETE)
+     - Campos: nombre, tono, locale, locale_secondary, auto_detect_locale
+  D. Filtros avanzados inbox:
+     - Filtro por assigned_user_id + date_from + date_to en /inbox
+     - Export CSV (GET /v1/inbox/export) con botón de descarga
+     - Búsqueda full-text (GET /v1/inbox/search?q=)
 
 Reglas:
 - NO tocar src/ Python
 - Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + actualizar CLAUDE.md + generar prompt F5
+- Commit + push + actualizar CLAUDE.md + generar prompt F6
 ```
 
 ---

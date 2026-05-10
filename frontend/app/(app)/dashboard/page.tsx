@@ -1,9 +1,9 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
-import { apiGet } from "@/lib/api"
-import type { TenantMetricsDashboard } from "@/lib/types"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { useEffect, useState, useCallback, useRef } from "react"
+import { apiGet, API_URL } from "@/lib/api"
+import type { TenantMetricsDashboard, StreamMetrics } from "@/lib/types"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   MessageSquare,
   Bot,
@@ -13,6 +13,7 @@ import {
   TrendingDown,
   AlertCircle,
   RefreshCw,
+  Radio,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -47,11 +48,65 @@ function MetricCard({
   )
 }
 
+// ── SSE hook ──────────────────────────────────────────────────────────────────
+
+function useMetricsSSE(onUpdate: (m: StreamMetrics) => void) {
+  const [sseActive, setSseActive] = useState(false)
+  const esRef = useRef<EventSource | null>(null)
+
+  useEffect(() => {
+    let es: EventSource
+
+    async function connect() {
+      // Obtener token para SSE (reutiliza el endpoint de ws-token)
+      try {
+        const res = await fetch("/api/auth/ws-token")
+        if (!res.ok) throw new Error("no token")
+        const { token } = await res.json()
+        const url = `${API_URL}/v1/metrics/stream?token=${encodeURIComponent(token)}`
+        es = new EventSource(url)
+        esRef.current = es
+
+        es.onopen = () => setSseActive(true)
+
+        es.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data) as StreamMetrics
+            onUpdate(data)
+          } catch {
+            // ignorar payloads no-JSON
+          }
+        }
+
+        es.onerror = () => {
+          es.close()
+          setSseActive(false)
+          // reintentar en 10s
+          setTimeout(connect, 10_000)
+        }
+      } catch {
+        setSseActive(false)
+      }
+    }
+
+    connect()
+
+    return () => {
+      esRef.current?.close()
+    }
+  }, [onUpdate])
+
+  return { sseActive }
+}
+
+// ── Página ─────────────────────────────────────────────────────────────────────
+
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<TenantMetricsDashboard | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [sseOverlay, setSseOverlay] = useState<Partial<TenantMetricsDashboard>>({})
 
   const fetchMetrics = useCallback(async () => {
     try {
@@ -66,11 +121,35 @@ export default function DashboardPage() {
     }
   }, [])
 
+  // Polling de respaldo (solo cuando SSE no está activo)
+  const { sseActive } = useMetricsSSE(
+    useCallback((stream: StreamMetrics) => {
+      // Actualizar campos que vienen del stream
+      setSseOverlay(prev => ({
+        ...prev,
+        messages_in_today: stream.messages_in_today,
+        messages_out_today: stream.messages_out_today,
+        conversations_active: stream.conversations_active,
+      }))
+      setLastUpdated(new Date())
+    }, [])
+  )
+
   useEffect(() => {
     fetchMetrics()
+  }, [fetchMetrics])
+
+  // Polling fallback cada 30s si SSE no está conectado
+  useEffect(() => {
+    if (sseActive) return
     const interval = setInterval(fetchMetrics, 30_000)
     return () => clearInterval(interval)
-  }, [fetchMetrics])
+  }, [sseActive, fetchMetrics])
+
+  // Combinar métricas base con overlay SSE
+  const combined: TenantMetricsDashboard | null = metrics
+    ? { ...metrics, ...sseOverlay }
+    : null
 
   return (
     <div className="p-6 space-y-6 max-w-6xl">
@@ -80,13 +159,23 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Dashboard</h1>
           <p className="text-sm text-zinc-500 mt-0.5">Métricas operativas en tiempo real</p>
         </div>
-        <button
-          onClick={fetchMetrics}
-          className="flex items-center gap-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
-        >
-          <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-          {lastUpdated ? `Actualizado ${lastUpdated.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}` : "Actualizando..."}
-        </button>
+        <div className="flex items-center gap-3">
+          {sseActive && (
+            <span className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400 font-medium">
+              <Radio className="w-3.5 h-3.5 animate-pulse" />
+              En vivo
+            </span>
+          )}
+          <button
+            onClick={fetchMetrics}
+            className="flex items-center gap-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+          >
+            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+            {lastUpdated
+              ? `Actualizado ${lastUpdated.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`
+              : "Actualizando..."}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -96,7 +185,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {loading && !metrics ? (
+      {loading && !combined ? (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <Card key={i}>
@@ -109,9 +198,9 @@ export default function DashboardPage() {
             </Card>
           ))}
         </div>
-      ) : metrics ? (
+      ) : combined ? (
         <div className="space-y-6">
-          {/* Sección: Conversaciones */}
+          {/* Conversaciones */}
           <div>
             <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
               Conversaciones
@@ -119,28 +208,28 @@ export default function DashboardPage() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <MetricCard
                 title="Total"
-                value={metrics.conversations_total}
+                value={combined.conversations_total}
                 icon={MessageSquare}
                 color="bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
                 subtitle="Todas las conversaciones"
               />
               <MetricCard
                 title="Activas"
-                value={metrics.conversations_active}
+                value={combined.conversations_active}
                 icon={TrendingUp}
                 color="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
                 subtitle="En curso ahora"
               />
               <MetricCard
                 title="Con bot"
-                value={metrics.conversations_bot}
+                value={combined.conversations_bot}
                 icon={Bot}
                 color="bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
                 subtitle="Atendidas por IA"
               />
               <MetricCard
                 title="Cerradas hoy"
-                value={metrics.conversations_closed_today}
+                value={combined.conversations_closed_today}
                 icon={TrendingDown}
                 color="bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
                 subtitle="Resueltas en el día"
@@ -148,22 +237,22 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Sección: Mensajes */}
+          {/* Mensajes */}
           <div>
             <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
               Mensajes hoy
             </h2>
-            <div className="grid grid-cols-2 lg:grid-cols-2 gap-4 max-w-xl">
+            <div className="grid grid-cols-2 gap-4 max-w-xl">
               <MetricCard
                 title="Recibidos"
-                value={metrics.messages_in_today}
+                value={combined.messages_in_today}
                 icon={TrendingDown}
                 color="bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400"
                 subtitle="Mensajes entrantes"
               />
               <MetricCard
                 title="Enviados"
-                value={metrics.messages_out_today}
+                value={combined.messages_out_today}
                 icon={TrendingUp}
                 color="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400"
                 subtitle="Mensajes salientes"
@@ -171,25 +260,25 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Sección: Agentes */}
+          {/* Agentes */}
           <div>
             <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
               Agentes
             </h2>
-            <div className="grid grid-cols-2 lg:grid-cols-2 gap-4 max-w-xl">
+            <div className="grid grid-cols-2 gap-4 max-w-xl">
               <MetricCard
                 title="En línea"
-                value={metrics.agents_online}
+                value={combined.agents_online}
                 icon={Users}
                 color="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
                 subtitle="Agentes activos"
               />
               <MetricCard
                 title="Sin asignar"
-                value={metrics.unassigned_waiting}
+                value={combined.unassigned_waiting}
                 icon={Clock}
                 color={
-                  metrics.unassigned_waiting > 0
+                  combined.unassigned_waiting > 0
                     ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
                     : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
                 }
@@ -200,7 +289,11 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
-      <p className="text-xs text-zinc-400">Se actualiza automáticamente cada 30 segundos.</p>
+      <p className="text-xs text-zinc-400">
+        {sseActive
+          ? "Métricas de mensajes y conversaciones activas actualizadas en tiempo real via SSE."
+          : "Se actualiza automáticamente cada 30 segundos."}
+      </p>
     </div>
   )
 }
