@@ -39,7 +39,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 20 | historial_pedidos_contacto real (orders reales + match email/phone + Shopify) | ✅ Mergeada a main |
 | 21 | Webhooks salientes conector + panel métricas + anti-hallucination logging | ✅ Mergeada a main |
 | 22 | Fix pre-existentes + rate limit + search semántico + hallucination_flag | ✅ Mergeada a main |
-| 23 | WebSocket inbox + Export GDPR + i18n personas + métricas SSE | ✅ PR abierto |
+| 23 | WebSocket inbox + Export GDPR + i18n personas + métricas SSE | ✅ Mergeada a main |
+| 24 | Webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -112,7 +113,11 @@ tests/
 ├── test_inbox_api.py        — inbox REST + bot mudo + escalar_a_humano + isolation
 ├── test_knowledge.py        — chunking, ingestión PDF/URL, búsqueda híbrida, tool agente, API, aislamiento
 ├── test_public_api.py       — CRUD api-keys/webhooks, authn por token, delivery, reintentos, dead letter, aislamiento
-└── test_historial_pedidos.py — historial_pedidos_contacto real: email/phone/contact_id, aislamiento, Shopify (Fase 20)
+├── test_historial_pedidos.py — historial_pedidos_contacto real: email/phone/contact_id, aislamiento, Shopify (Fase 20)
+├── test_fase24_conv_webhooks.py — webhooks de conversación: message.received/sent, conversation.created/status_changed, aislamiento
+├── test_fase24_wa_metrics.py    — métricas WaNumber: messages_in/out, conversations, top_contacts, filtros fecha, aislamiento
+├── test_fase24_inbox_search.py  — búsqueda full-text inbox: match, contexto ±2, filtros, 400 sin q, aislamiento
+└── test_fase24_summary_on_close.py — resumen al cerrar: disparo tarea, skip ≤5 turnos, LLM mock, ai_summary en GET
 ```
 
 > **Nota fase-0:** `src/main.py` agrega `tenant_context_middleware` que setea
@@ -217,6 +222,79 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Métricas SSE | `GET /v1/metrics/stream` → `text/event-stream`. Auth flexible: Bearer header O `?token=<jwt>` (helper `_resolve_sse_user`). Emite primer evento inmediatamente; luego cada `METRICS_STREAM_INTERVAL_S` seg (Settings, default 30). Payload: messages_in_today, messages_out_today, conversations_active, llm_cost_cents_today, timestamp. Queries sobre `usage_metrics` y `wa_conversations`. CancelledError cierra silenciosamente. | Fase 23 |
 | S3 config en Settings | `s3_bucket_name`, `s3_endpoint_url`, `s3_access_key`, `s3_secret_key`, `s3_region` en Settings. `src/billing/storage.py`: `upload_bytes()` + `generate_presigned_url()`. Abstracción mockeable en tests. | Fase 23 |
 | metrics_stream_interval_s | `METRICS_STREAM_INTERVAL_S: int = 30` en Settings. Controla el intervalo de emisión SSE. | Fase 23 |
+| Webhooks de conversación | `emit_event()` (Fase 10) reutilizado en: `messaging/webhook.py` (message.received + conversation.created), `agent/service._persist_outbound()` (message.sent bot), `inbox/api.reply_conversation()` (message.sent agente), `inbox/api.take/close_conversation()` (conversation.status_changed). Fire-and-forget con try/except. `_get_or_create_conversation` devuelve `(conv, is_new: bool)` para emitir solo en conv nueva. | Fase 24 |
+| Métricas WaNumber | `GET /v1/wa-numbers/{id}/metrics` con params `date_from`/`date_to` (default hoy-30d/hoy). COUNT sobre `wa_messages` y `wa_conversations` filtrados por `wa_number_id` + tenant. `top_contacts`: top 5 convs por mensajes entrantes, resuelto a phone via JOIN en Python. Schema `WaNumberMetricsOut` + `TopContactEntry` en `src/wa/api.py`. | Fase 24 |
+| Búsqueda full-text inbox | `GET /v1/inbox/search?q=` usa `body_tsv` GENERATED ALWAYS (migración 0020, GIN index). Columna referenciada via `column("body_tsv", TSVECTOR)` (no en ORM). `plainto_tsquery('spanish', q)`. Contexto ±2 por subqueries `created_at < msg` desc limit 2 + `created_at > msg` asc limit 2. 400 si q vacío o ausente. | Fase 24 |
+| Resumen al cerrar (Celery) | `src/agent/tasks.summarize_on_close(conv_id)` Celery task. Disparada en `close_conversation` si `conv.turn_count > 5`. Usa Claude Haiku (`claude-haiku-4-5-20251001`). Persiste en `WaConversation.ai_summary` (columna existente desde Fase 3). `ConversationSummary` y `ConversationDetail` exponen `ai_summary`. `src.agent` añadido al `autodiscover_tasks`. | Fase 24 |
+
+---
+
+## Prompt de arranque — Fase 25 (siguiente prioridad del backlog)
+
+```
+Retomo Fase 25 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Contexto:
+- Fase 24 (webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar) mergeada a main. PR #19.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase25-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-24 funcionales.
+- Primero: leer SOLO CLAUDE.md. Nada más.
+
+- Estado tras Fase 24:
+    A. Webhooks de conversación:
+       - emit_event() (Fase 10) inyectado en: messaging/webhook.py (message.received + conversation.created),
+         agent/service._persist_outbound() (message.sent bot), inbox/api.reply_conversation() (message.sent agente),
+         inbox/api.take/close_conversation() (conversation.status_changed).
+       - _get_or_create_conversation devuelve (conv, is_new: bool) para emitir solo en conv nueva.
+       - Tests en tests/test_fase24_conv_webhooks.py (8 tests).
+    B. Métricas WaNumber:
+       - GET /v1/wa-numbers/{id}/metrics con params date_from/date_to (default hoy-30d/hoy).
+       - Respuesta: wa_number_id, date_from, date_to, messages_in, messages_out,
+                    conversations_total, conversations_active, top_contacts [{phone, count}].
+       - Schema WaNumberMetricsOut + TopContactEntry en src/wa/api.py.
+       - Tests en tests/test_fase24_wa_metrics.py (6 tests).
+    C. Búsqueda full-text inbox:
+       - GET /v1/inbox/search?q=<query>&conversation_id=<uuid>&date_from=<date>&date_to=<date>
+       - Usa body_tsv GENERATED ALWAYS (migración 0020, GIN index) via column("body_tsv", TSVECTOR).
+       - plainto_tsquery('spanish', q). Contexto ±2 mensajes. 400 si q vacío.
+       - Tests en tests/test_fase24_inbox_search.py (8 tests).
+    D. Resumen al cerrar:
+       - src/agent/tasks.summarize_on_close(conv_id) Celery task.
+       - Disparada en close_conversation si conv.turn_count > 5.
+       - Claude Haiku (claude-haiku-4-5-20251001). Persiste en WaConversation.ai_summary.
+       - ConversationSummary expone ai_summary. src.agent en autodiscover_tasks.
+       - Tests en tests/test_fase24_summary_on_close.py (7 tests).
+    - Migración 0020: body_tsv en wa_messages con GIN index.
+    - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
+      (export_tenant_data importado localmente, no patcheable como attr de módulo — no es regresión).
+
+- Opciones a implementar en Fase 25 (decidir con el usuario al arrancar):
+
+    A. Panel de SLA y tiempos de respuesta:
+       - Calcular tiempo_primera_respuesta (bot o agente) por conversación.
+       - Calcular tiempo_de_resolución (apertura → close).
+       - Endpoint: GET /v1/inbox/sla-report?date_from=&date_to= con percentiles p50/p90/p99.
+       - Persistir first_response_at / resolved_at en WaConversation (migración nueva).
+
+    B. Etiquetas (tags) en conversaciones:
+       - Tabla conversation_tags: {id, tenant_id, wa_conversation_id, tag, created_by_user_id}.
+       - POST /v1/inbox/{conv_id}/tags, DELETE /v1/inbox/{conv_id}/tags/{tag}.
+       - GET /v1/inbox?tag=xxx para filtrar conversaciones por etiqueta.
+       - Migración nueva.
+
+    C. Templates de respuesta rápida (canned responses):
+       - Tabla canned_responses: {id, tenant_id, shortcode, text, created_by}.
+       - CRUD /v1/canned-responses.
+       - Agente puede usar /buscar_template para respuestas predefinidas.
+
+    D. Notificaciones internas (in-app) para agentes:
+       - Cuando una conversación pasa a waiting_agent, notificar a todos los agentes del tenant.
+       - WebSocket broadcast al canal /ws/notifications/{tenant_id}?token=<jwt>.
+       - Schema NotificationEvent en src/messaging/ws_manager.py.
+
+- NO tocar: src/knowledge/ salvo indicación.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 26.
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 

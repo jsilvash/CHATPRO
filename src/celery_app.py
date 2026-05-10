@@ -25,7 +25,7 @@ def create_celery_app() -> Celery:
         task_acks_late=True,
         worker_prefetch_multiplier=1,
     )
-    app.autodiscover_tasks(["src.connectors.woocommerce", "src.billing"])
+    app.autodiscover_tasks(["src.connectors.woocommerce", "src.billing", "src.agent"])
     return app
 
 

@@ -180,6 +180,26 @@ def _persist_outbound(
     except Exception:
         pass
 
+    # Webhook saliente message.sent (Fase 24A) — fire-and-forget.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        _emit(
+            conversation.tenant_id,
+            "message.sent",
+            {
+                "conversation_id": str(conversation.id),
+                "tenant_id": str(conversation.tenant_id),
+                "message_id": str(msg.id),
+                "wa_contact_phone": conversation.wa_contact_phone,
+                "text": text,
+                "source": "bot",
+            },
+            db,
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return msg
 
 
