@@ -325,7 +325,7 @@ class WooCommerceConnector(Connector):
                     },
                     "required": ["query"],
                 },
-                callable_ref="connectors.woocommerce.tools:buscar_productos",
+                callable_ref="src.connectors.woocommerce.tools:buscar_productos",
             ),
             ToolSchema(
                 name="consultar_stock_y_precio",
@@ -337,7 +337,7 @@ class WooCommerceConnector(Connector):
                         "product_id": {"type": "integer"},
                     },
                 },
-                callable_ref="connectors.woocommerce.tools:consultar_stock_y_precio",
+                callable_ref="src.connectors.woocommerce.tools:consultar_stock_y_precio",
             ),
             ToolSchema(
                 name="historial_pedidos_contacto",
@@ -348,7 +348,7 @@ class WooCommerceConnector(Connector):
                         "limit": {"type": "integer", "default": 5},
                     },
                 },
-                callable_ref="connectors.woocommerce.tools:historial_pedidos_contacto",
+                callable_ref="src.connectors.woocommerce.tools:historial_pedidos_contacto",
             ),
         ]
 

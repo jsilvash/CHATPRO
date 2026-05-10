@@ -1213,14 +1213,17 @@ CREATE INDEX ON audit_log(tenant_id, target_type, target_id);
 - **Rama:** `claude/woocommerce-incremental-sync-bdrob`
 - **PR:** "fase 6: woo incremental + embeddings"
 
-### Fase 7 — Tools del agente (catálogo, stock, órdenes)
+### Fase 7 — Tools del agente (catálogo, stock, órdenes) ✅
 
 - **Objetivo:** Claude llama tools del conector activo del tenant.
 - **Done:**
-  - Loop de tool_use con caps de costo y de tool_calls.
-  - Tools: `buscar_productos`, `consultar_stock_y_precio`, `historial_pedidos_contacto`, `escalar_a_humano`.
-  - `tool_invocations` registrando cada llamada.
-  - E2E: contacto pregunta por producto → bot responde con precio y link reales del Woo.
+  - Loop de tool_use con caps `MAX_TOOL_CALLS=5` y `MAX_COST_CENTS` configurable por llamada.
+  - Tools ejecutables: `buscar_productos` (híbrida FTS+vector), `consultar_stock_y_precio` (DB lookup), `historial_pedidos_contacto` (WC /orders), `escalar_a_humano` (built-in).
+  - Tabla `tool_invocations` con input_json, output_json, status, latency_ms, cost_cents.
+  - Anti-hallucination: precios en respuesta validados contra tool_results; flag activado si no coinciden.
+  - 28 tests: E2E grounded-price, cap tool_calls, cap cost, escalar, consultar hit/miss, historial WC API, anti-hallucination, logging ToolInvocation, timeout.
+- **Archivos:** `src/agent/service.py`, `src/agent/tool_executor.py`, `src/agent/llm.py`, `src/agent/models.py`, `src/connectors/woocommerce/tools.py`, `alembic/versions/0013_agent_tools.py`.
+- **Rama:** `claude/agent-tools-woocommerce-wuQKq`
 - **PR:** "fase 7: agent tools + e-commerce"
 
 ### Fase 8 — Inbox + handoff humano
@@ -1340,3 +1343,34 @@ CREATE INDEX ON audit_log(tenant_id, target_type, target_id);
 2. Decidir nombre, hosting, providers de §14.
 3. Aportar archivos de referencia (`WHATSAPP_HUB_ARQUITECTURA_ACTUAL.md`) si están disponibles.
 4. Dar OK explícito → comienza Fase 0 en una nueva rama desde la rama de este plan.
+
+---
+
+## Prompt Fase 15 — Retomar Fase 8 (Inbox + handoff humano)
+
+```
+Retomo Fase 15 — Inbox + handoff humano (Fase 8 del plan).
+
+Contexto:
+- Rama activa: crear desde claude/agent-tools-woocommerce-wuQKq → claude/inbox-handoff-<hash>
+- Fase 7 (agent tools + e-commerce) ya mergeada.
+- Primero:
+    git checkout claude/agent-tools-woocommerce-wuQKq && git pull origin claude/agent-tools-woocommerce-wuQKq
+    git checkout -b claude/inbox-handoff-<hash>
+- Después: leer SOLO CLAUDE.md (si existe), WHATSAPP_HUB_PLAN.md §8 (Inbox + handoff humano)
+  y src/agent/service.py (AgentTurnResult, run_agent_turn).
+  NO leer nada más.
+
+Objetivos (Fase 8 del plan):
+1. Ampliar WaConversation con status ('bot'|'waiting_agent'|'agent'|'closed') + assigned_agent_id.
+2. Ampliar WaMessage con role ('contact'|'bot'|'agent'|'system'), content TEXT, wamid TEXT.
+3. Tabla conversation_status_log: transiciones auditadas (from_status, to_status, actor_id, reason).
+4. Endpoint POST /conversations/{id}/assign → asigna agente, transiciona a 'agent'.
+5. Endpoint POST /conversations/{id}/close → transiciona a 'closed'.
+6. Cuando run_agent_turn retorna stop_reason='escalated' o 'max_tool_calls' → auto-transicionar a 'waiting_agent'.
+7. Alembic migration 0014_inbox_handoff.
+8. Tests: transiciones de status, assign, close, auto-escalate desde agent service.
+
+NO tocar: src/billing/, src/connectors/shopify/, fases 0-14 ya mergeadas.
+Al cerrar: mergear PR a main, actualizar plan Fase 8 → ✅, generar prompt Fase 16.
+```
