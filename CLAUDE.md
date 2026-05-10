@@ -41,7 +41,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 22 | Fix pre-existentes + rate limit + search semántico + hallucination_flag | ✅ Mergeada a main |
 | 23 | WebSocket inbox + Export GDPR + i18n personas + métricas SSE | ✅ Mergeada a main |
 | 24 | Webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar | ✅ Mergeada a main |
-| 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ PR abierto |
+| 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
+| 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -231,88 +232,86 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Tags en conversaciones | Tabla `conversation_tags` (migración 0022): tenant_id, wa_conversation_id FK, tag VARCHAR(64), created_by_user_id FK nullable, created_at. Unique (wa_conversation_id, tag). Tags normalizadas a minúsculas. `POST /v1/inbox/{conv_id}/tags` → 201/200 idempotente. `DELETE /v1/inbox/{conv_id}/tags/{tag}` → 204. `GET /v1/inbox?tag=xxx` filtra por subquery. `ConversationSummary.tags: list[str]` cargado via `_load_tags()` batch query. Aislamiento por tenant_id en toda query. | Fase 25 |
 | Canned responses | Tabla `canned_responses` (migración 0023): tenant_id, shortcode VARCHAR(64), text, created_by_user_id, timestamps. Unique (tenant_id, shortcode). CRUD completo en `src/inbox/canned_api.py` bajo `/v1/canned-responses`. PATCH actualiza `updated_at` manualmente. El mismo shortcode puede existir en tenants distintos. Router registrado en `src/api/v1/router.py`. | Fase 25 |
 | NotificationManager WS | `src/messaging/ws_manager.NotificationManager`: dict{tenant_id→set[WebSocket]}, misma arquitectura que `ConnectionManager`. Singleton `notification_manager`. `broadcast_from_sync()` usa `run_coroutine_threadsafe` igual que manager. Endpoint `/ws/notifications/{tenant_id}?token=<jwt>` en `ws_router.py`. Broadcast de `conversation.waiting_agent` en `_auto_escalate_if_needed()` (service.py). Schema: `{event, conversation_id, wa_contact_phone, tenant_id, timestamp ISO8601}`. | Fase 25 |
+| Auto-asignación round-robin | `_find_agent_with_least_load(db, tenant_id)` en `service.py`: filtra User con role in (agent,admin) + is_active=True. Cuenta convs activas (status agent|waiting_agent) por assigned_user_id. Retorna el user_id del mínimo. Llamado en `_auto_escalate_if_needed()` después de crear HandoffEvent. Si no hay agentes → deja `assigned_user_id=None`. `GET /v1/users/available-agents` en `src/api/v1/users.py` (declarado ANTES de `/{user_id}` para evitar conflicto de ruta). Responde con `items: [{id,email,full_name,role,conv_count}], total`. Ordenado por conv_count ASC. | Fase 26 |
+| Notas internas en conversaciones | Tabla `conversation_notes` (migración 0024): tenant_id, wa_conversation_id FK, user_id FK, text, created_at. Index (tenant_id, wa_conversation_id). `POST /v1/inbox/{conv_id}/notes` → 201. `GET` → lista ASC. `DELETE /{note_id}` → 204 solo si `note.user_id == current_user.id`, sino 403. `ConversationSummary.notes_count: int` cargado via `_load_notes_count()` batch COUNT query. Incluido en list, get, close. | Fase 26 |
+| Historial de status de conversación | Tabla `conversation_status_history` (migración 0025): tenant_id, wa_conversation_id FK, old_status, new_status, changed_by_user_id FK nullable, changed_at. Helper `_record_status_change()` en `inbox/api.py`. Llamado en: `take_conversation` (waiting_agent→agent), `close_conversation` (X→bot), `reply_conversation` (waiting_agent→agent si promueve). `_auto_escalate_if_needed` en `service.py` registra bot→waiting_agent (changed_by_user_id=None). `GET /v1/inbox/{conv_id}/status-history` → lista ordenada por changed_at ASC. | Fase 26 |
+| Templates con variables en canned responses | Variables: `{{nombre}}`, `{{producto}}` etc. Regex `_VAR_PATTERN = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")`. Validación `_validate_variables()` en create y update: 422 si variable mal formada. `CannedResponseOut.variables: list[str]` = lista de nombres de variables en el texto. Helper `from_orm_with_vars()` en schema. `GET /v1/canned-responses/{id}/render` acepta query params como variables, devuelve `{rendered_text, variables_used, variables_missing, original_text}`. `GET /v1/canned-responses/search?q=` busca case-insensitive en shortcode OR text (declarado antes de `/{canned_id}`). | Fase 26 |
 
 ---
 
-## Prompt de arranque — Fase 26 (siguiente prioridad del backlog)
+## Prompt de arranque — Fase 27 (siguiente prioridad del backlog)
 
 ```
-Retomo Fase 26 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Retomo Fase 27 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- Fase 25 (SLA panel + tags conversaciones + canned responses + notificaciones WS) mergeada a main. PR #20.
-- Rama nueva: git fetch origin main && git checkout -b claude/phase26-XXXXX origin/main
-- Main contiene Fases 0-12 + 16 + 18-25 funcionales.
+- Fase 26 (auto-asignación round-robin + notas internas + historial status + templates variables) mergeada a main. PR #21.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase27-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-26 funcionales.
 - Primero: leer SOLO CLAUDE.md. Nada más.
 
-- Estado tras Fase 25:
-    A. SLA panel:
-       - WaConversation.first_response_at + resolved_at (migración 0021).
-       - first_response_at: seteado en _persist_outbound (bot) y reply_conversation (agente), solo si NULL.
-       - resolved_at: seteado en close_conversation.
-       - GET /v1/inbox/sla-report con avg/p50/p90 de primera respuesta y resolución.
-       - Tests en tests/test_fase25_sla.py (6 tests).
-    B. Tags en conversaciones:
-       - Tabla conversation_tags (migración 0022).
-       - POST /v1/inbox/{conv_id}/tags → 201/200 idempotente. Tags normalizadas a minúsculas.
-       - DELETE /v1/inbox/{conv_id}/tags/{tag} → 204 idempotente.
-       - GET /v1/inbox?tag=xxx filtra por etiqueta.
-       - GET /v1/inbox/{conv_id} incluye tags: list[str].
-       - Tests en tests/test_fase25_tags.py (8 tests).
-    C. Canned responses:
-       - Tabla canned_responses (migración 0023): tenant_id, shortcode unique, text.
-       - CRUD completo en /v1/canned-responses (POST 201, GET list paginado, GET/{id}, PATCH, DELETE).
-       - src/inbox/canned_api.py registrado en src/api/v1/router.py.
-       - Tests en tests/test_fase25_canned.py (12 tests).
-    D. Notificaciones WS:
-       - NotificationManager en src/messaging/ws_manager.py.
-       - Endpoint /ws/notifications/{tenant_id}?token=<jwt> en ws_router.py.
-       - Broadcast conversation.waiting_agent en _auto_escalate_if_needed (service.py).
-       - Tests en tests/test_fase25_notifications.py (8 tests).
-    - Migraciones 0021, 0022, 0023.
+- Estado tras Fase 26:
+    A. Auto-asignación round-robin:
+       - _find_agent_with_least_load(db, tenant_id) en service.py.
+       - _auto_escalate_if_needed asigna al agente con menos convs activas (agent|waiting_agent).
+       - Sin agentes → assigned_user_id=None, status=waiting_agent.
+       - GET /v1/users/available-agents → [{id, email, full_name, role, conv_count}] ordenado ASC.
+       - Tests en tests/test_fase26_auto_assign.py (9 tests).
+    B. Notas internas:
+       - Tabla conversation_notes (migración 0024).
+       - POST /v1/inbox/{conv_id}/notes → 201.
+       - GET /v1/inbox/{conv_id}/notes → lista ASC.
+       - DELETE /{note_id} → 204 solo autor, 403 si no es autor.
+       - ConversationSummary.notes_count: int (cargado via _load_notes_count batch query).
+       - Tests en tests/test_fase26_notes.py (8 tests).
+    C. Historial de status:
+       - Tabla conversation_status_history (migración 0025).
+       - _record_status_change() helper en inbox/api.py.
+       - Registrado en: take_conversation, close_conversation, reply_conversation (promueve waiting_agent→agent), _auto_escalate_if_needed (bot→waiting_agent, user_id=None).
+       - GET /v1/inbox/{conv_id}/status-history → lista ASC por changed_at.
+       - Tests en tests/test_fase26_status_history.py (7 tests).
+    D. Templates con variables:
+       - Variables {{nombre}}, {{producto}} etc. en canned responses.
+       - _validate_variables() en create y update → 422 si mal formada.
+       - CannedResponseOut.variables: list[str] vía from_orm_with_vars().
+       - GET /v1/canned-responses/{id}/render?var=val → {rendered_text, variables_used, variables_missing, original_text}.
+       - GET /v1/canned-responses/search?q= → busca en shortcode OR text (case-insensitive). Declarado antes de /{canned_id}.
+       - Tests en tests/test_fase26_canned_templates.py (12 tests).
+    - Migraciones 0024, 0025.
     - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
-      (export_tenant_data importado localmente, no patcheable como attr de módulo — no es regresión).
+      (export_tenant_data importado localmente, no patcheable — no es regresión).
 
 - Implementar las 4 opciones en esta sesión, en orden A → B → C → D:
 
-    A. Asignación automática de conversaciones (round-robin):
-       - Cuando una conversación pasa a waiting_agent (bot no pudo resolver),
-         asignar automáticamente al agente disponible con menos conversaciones activas del tenant.
-       - "Disponible" = usuario con role=agent o admin, is_active=True.
-       - Si no hay agentes disponibles → dejar sin asignar (status=waiting_agent sin assigned_user_id).
-       - Integrar en _auto_escalate_if_needed (service.py) después del HandoffEvent.
-       - Endpoint: GET /v1/users/available-agents → lista de agentes con carga actual (conv_count).
-       - Tests en tests/test_fase26_auto_assign.py.
+    A. Filtros avanzados en listado de inbox:
+       - GET /v1/inbox soportar filtros adicionales: ?assigned_user_id=, ?date_from=, ?date_to=,
+         ?search=<texto_libre> (búsqueda por wa_contact_name o wa_contact_phone).
+       - Paginación mejorada: devolver página actual + total_pages en la respuesta.
+       - Tests en tests/test_fase27_inbox_filters.py.
 
-    B. Notas internas en conversaciones:
-       - Tabla conversation_notes: {id UUID PK, tenant_id UUID, wa_conversation_id UUID FK,
-         user_id UUID FK, text TEXT, created_at DateTime}.
-         Index (tenant_id, wa_conversation_id). Migración 0024.
-       - POST /v1/inbox/{conv_id}/notes body: {"text": "..."} → 201.
-       - GET /v1/inbox/{conv_id}/notes → lista de notas.
-       - DELETE /v1/inbox/{conv_id}/notes/{note_id} → 204 (solo el autor).
-       - GET /v1/inbox/{conv_id} incluye notes_count: int en la respuesta.
-       - Tests en tests/test_fase26_notes.py.
+    B. Bulk actions en inbox:
+       - POST /v1/inbox/bulk-assign body: {conversation_ids: [uuid], user_id: uuid}
+         → asigna múltiples conversaciones al agente indicado. Devuelve {updated: N, errors: []}.
+       - POST /v1/inbox/bulk-tag body: {conversation_ids: [uuid], tag: str}
+         → aplica etiqueta a múltiples conversaciones.
+       - POST /v1/inbox/bulk-close body: {conversation_ids: [uuid]}
+         → cierra múltiples conversaciones (status→bot). Registra status_history para cada una.
+       - Tests en tests/test_fase27_bulk_actions.py.
 
-    C. Historial de cambios de status en conversación:
-       - Tabla conversation_status_history: {id UUID PK, tenant_id UUID,
-         wa_conversation_id UUID FK, old_status TEXT, new_status TEXT,
-         changed_by_user_id UUID FK nullable, changed_at DateTime}.
-         Migración 0025.
-       - Registrar en: take_conversation, close_conversation, reply_conversation
-         (cuando promueve waiting_agent→agent), _auto_escalate_if_needed.
-       - GET /v1/inbox/{conv_id}/status-history → lista ordenada por changed_at.
-       - Tests en tests/test_fase26_status_history.py.
+    C. Gestión de usuarios mejorada:
+       - GET /v1/users/{user_id}/stats → {conversations_active, conversations_today, avg_response_time_s, notes_count}.
+       - PATCH /v1/users/{user_id}/deactivate → pone is_active=False y re-asigna sus convs activas
+         al agente con menos carga (round-robin).
+       - Tests en tests/test_fase27_user_management.py.
 
-    D. Plantillas de mensaje con variables:
-       - Extender canned_responses para soportar variables tipo {{nombre}}, {{producto}}.
-       - GET /v1/canned-responses/{id}/render?nombre=Juan&producto=Zapatillas
-         → devuelve text con variables reemplazadas.
-       - Validación al crear/actualizar: variables bien formadas (solo letras/guión bajo).
-       - Endpoint: GET /v1/canned-responses/search?q=<texto> para buscar por shortcode/text.
-       - Tests en tests/test_fase26_canned_templates.py.
+    D. Webhook events para notas e historial:
+       - Emitir evento note.created cuando se crea una nota interna.
+         Payload: {conversation_id, note_id, user_id, text_preview: text[:100], tenant_id}.
+       - Emitir evento conversation.status_changed cuando cambia status (ya existe en take/close,
+         agregar también cuando lo hace _auto_escalate_if_needed).
+       - Tests en tests/test_fase27_webhook_events.py.
 
 - NO tocar: src/knowledge/ salvo indicación.
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 27.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 28.
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 

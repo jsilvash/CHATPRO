@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_user, require_role
@@ -10,6 +11,7 @@ from src.auth.passwords import hash_password
 from src.db.models import User
 from src.db.session import get_db
 from src.tenancy.context import get_current_tenant_id
+from src.wa.models import WaConversation
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -67,6 +69,25 @@ class UserListResponse(BaseModel):
     page_size: int
 
 
+# ── Agentes disponibles — schemas (Fase 26A) ─────────────────────────────────
+
+
+class AvailableAgentOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role: str
+    conv_count: int
+
+
+class AvailableAgentsResponse(BaseModel):
+    items: list[AvailableAgentOut]
+    total: int
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+
 @router.get("", response_model=UserListResponse)
 def list_users(
     q: str | None = Query(None, description="Buscar por nombre o email"),
@@ -113,6 +134,63 @@ def create_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+@router.get("/available-agents", response_model=AvailableAgentsResponse)
+def list_available_agents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AvailableAgentsResponse:
+    """Lista agentes activos del tenant con su carga de conversaciones activas.
+
+    "Disponible" = role en (agent, admin) y is_active=True.
+    conv_count = conversaciones con status agent o waiting_agent asignadas al agente.
+    Ordenado por conv_count ASC (el de menos carga primero).
+    """
+    tenant_id = get_current_tenant_id()
+
+    agents = (
+        db.query(User)
+        .filter(
+            User.tenant_id == tenant_id,
+            User.role.in_(["agent", "admin"]),
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+
+    if not agents:
+        return AvailableAgentsResponse(items=[], total=0)
+
+    agent_ids = [a.id for a in agents]
+    conv_counts: dict[uuid.UUID, int] = dict(
+        db.query(
+            WaConversation.assigned_user_id,
+            func.count(WaConversation.id),
+        )
+        .filter(
+            WaConversation.tenant_id == tenant_id,
+            WaConversation.assigned_user_id.in_(agent_ids),
+            WaConversation.status.in_(["agent", "waiting_agent"]),
+        )
+        .group_by(WaConversation.assigned_user_id)
+        .all()
+    )
+
+    items = sorted(
+        [
+            AvailableAgentOut(
+                id=a.id,
+                email=a.email,
+                full_name=a.full_name,
+                role=a.role,
+                conv_count=conv_counts.get(a.id, 0),
+            )
+            for a in agents
+        ],
+        key=lambda x: (x.conv_count, str(x.id)),
+    )
+    return AvailableAgentsResponse(items=items, total=len(items))
 
 
 @router.get("/{user_id}", response_model=UserResponse)

@@ -1,15 +1,19 @@
 """API REST del inbox humano.
 
 Endpoints:
-- GET    /v1/inbox/sla-report                    — reporte SLA del tenant (Fase 25A)
-- GET    /v1/inbox/search                        — búsqueda full-text (Fase 24C)
-- GET    /v1/inbox                               — listar conversaciones (Fase 8, Fase 25B: ?tag=)
-- GET    /v1/inbox/{conversation_id}             — detalle con historial + tool_invocations
-- POST   /v1/inbox/{conversation_id}/take        — asignarse la conversación
-- POST   /v1/inbox/{conversation_id}/reply       — enviar mensaje como agente
-- POST   /v1/inbox/{conversation_id}/close       — devolver al bot (setea resolved_at)
-- POST   /v1/inbox/{conversation_id}/tags        — añadir etiqueta (Fase 25B)
-- DELETE /v1/inbox/{conversation_id}/tags/{tag}  — quitar etiqueta (Fase 25B)
+- GET    /v1/inbox/sla-report                             — reporte SLA (Fase 25A)
+- GET    /v1/inbox/search                                 — búsqueda full-text (Fase 24C)
+- GET    /v1/inbox                                        — listar conversaciones
+- GET    /v1/inbox/{conversation_id}                      — detalle (incluye notes_count)
+- POST   /v1/inbox/{conversation_id}/take                 — asignarse la conversación
+- POST   /v1/inbox/{conversation_id}/reply                — enviar mensaje como agente
+- POST   /v1/inbox/{conversation_id}/close                — devolver al bot
+- POST   /v1/inbox/{conversation_id}/tags                 — añadir etiqueta (Fase 25B)
+- DELETE /v1/inbox/{conversation_id}/tags/{tag}           — quitar etiqueta (Fase 25B)
+- POST   /v1/inbox/{conversation_id}/notes                — crear nota interna (Fase 26B)
+- GET    /v1/inbox/{conversation_id}/notes                — listar notas (Fase 26B)
+- DELETE /v1/inbox/{conversation_id}/notes/{note_id}      — eliminar nota (Fase 26B, solo autor)
+- GET    /v1/inbox/{conversation_id}/status-history       — historial de status (Fase 26C)
 """
 
 from __future__ import annotations
@@ -27,7 +31,13 @@ from src.agent.models import ToolInvocation
 from src.auth.dependencies import get_current_user
 from src.db.models import User
 from src.db.session import get_db
-from src.inbox.models import CannedResponse, ConversationTag, HandoffEvent
+from src.inbox.models import (
+    CannedResponse,
+    ConversationNote,
+    ConversationStatusHistory,
+    ConversationTag,
+    HandoffEvent,
+)
 from src.messaging import dispatcher
 from src.tenancy.context import bypass_tenant_filter, get_current_tenant_id
 from src.wa.models import WaConversation, WaMessage, WaNumber
@@ -63,6 +73,7 @@ class ConversationSummary(BaseModel):
     first_response_at: datetime | None = None
     resolved_at: datetime | None = None
     tags: list[str] = []
+    notes_count: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -159,6 +170,39 @@ class TagCreateRequest(BaseModel):
     tag: str
 
 
+# ── Schemas notas internas (Fase 26B) ─────────────────────────────────────────
+
+
+class NoteCreateRequest(BaseModel):
+    text: str
+
+
+class NoteOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    wa_conversation_id: uuid.UUID
+    user_id: uuid.UUID
+    text: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Schemas historial de status (Fase 26C) ────────────────────────────────────
+
+
+class StatusHistoryOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    wa_conversation_id: uuid.UUID
+    old_status: str
+    new_status: str
+    changed_by_user_id: uuid.UUID | None
+    changed_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -185,7 +229,36 @@ def _load_tags(
     return result
 
 
-def _conv_summary(conv: WaConversation, tags: list[str]) -> ConversationSummary:
+def _load_notes_count(
+    conv_ids: list[uuid.UUID],
+    tenant_id: uuid.UUID,
+    db: Session,
+) -> dict[uuid.UUID, int]:
+    """Devuelve {conv_id: count} de notas para las conversaciones dadas."""
+    if not conv_ids:
+        return {}
+    from sqlalchemy import func as sql_func
+    with bypass_tenant_filter():
+        rows = (
+            db.query(
+                ConversationNote.wa_conversation_id,
+                sql_func.count(ConversationNote.id),
+            )
+            .filter(
+                ConversationNote.tenant_id == tenant_id,
+                ConversationNote.wa_conversation_id.in_(conv_ids),
+            )
+            .group_by(ConversationNote.wa_conversation_id)
+            .all()
+        )
+    return {cid: cnt for cid, cnt in rows}
+
+
+def _conv_summary(
+    conv: WaConversation,
+    tags: list[str],
+    notes_count: int = 0,
+) -> ConversationSummary:
     return ConversationSummary(
         id=conv.id,
         tenant_id=conv.tenant_id,
@@ -200,6 +273,7 @@ def _conv_summary(conv: WaConversation, tags: list[str]) -> ConversationSummary:
         first_response_at=conv.first_response_at,
         resolved_at=conv.resolved_at,
         tags=sorted(tags),
+        notes_count=notes_count,
         created_at=conv.created_at,
     )
 
@@ -462,8 +536,13 @@ def list_inbox(
         total = q.count()
         items = q.offset(offset).limit(limit).all()
 
-    tags_map = _load_tags([c.id for c in items], tenant_id, db)
-    summaries = [_conv_summary(c, tags_map.get(c.id, [])) for c in items]
+    conv_ids = [c.id for c in items]
+    tags_map = _load_tags(conv_ids, tenant_id, db)
+    notes_count_map = _load_notes_count(conv_ids, tenant_id, db)
+    summaries = [
+        _conv_summary(c, tags_map.get(c.id, []), notes_count_map.get(c.id, 0))
+        for c in items
+    ]
     return ConversationListResponse(items=summaries, total=total)
 
 
@@ -509,8 +588,9 @@ def get_conversation(
         )
 
     tags_map = _load_tags([conversation_id], tenant_id, db)
+    notes_count_map = _load_notes_count([conversation_id], tenant_id, db)
     return ConversationDetail(
-        conversation=_conv_summary(conv, tags_map.get(conversation_id, [])),
+        conversation=_conv_summary(conv, tags_map.get(conversation_id, []), notes_count_map.get(conversation_id, 0)),
         messages=messages,
         tool_invocations=tool_invocations,
         handoff_events=handoff_events,
@@ -547,9 +627,13 @@ def take_conversation(
             detail="La conversación ya tiene un agente asignado.",
         )
 
+    old_status = conv.status
     conv.status = "agent"
     conv.assigned_user_id = current_user.id
     db.add(conv)
+
+    # Historial de status (Fase 26C).
+    _record_status_change(db, tenant_id, conversation_id, old_status, "agent", current_user.id)
 
     handoff = _get_open_handoff(conversation_id, tenant_id, db)
     if handoff is None:
@@ -634,6 +718,7 @@ def reply_conversation(
 
     # Si estaba en waiting_agent, lo promovemos a agent.
     if conv.status == "waiting_agent":
+        _record_status_change(db, tenant_id, conversation_id, "waiting_agent", "agent", current_user.id)
         conv.status = "agent"
         conv.assigned_user_id = current_user.id
         db.add(conv)
@@ -749,11 +834,15 @@ def close_conversation(
         )
 
     now = datetime.now(UTC)
+    old_status = conv.status
     conv.status = "bot"
     conv.assigned_user_id = None
     # SLA (Fase 25A): marcar momento de resolución.
     conv.resolved_at = now
     db.add(conv)
+
+    # Historial de status (Fase 26C).
+    _record_status_change(db, tenant_id, conversation_id, old_status, "bot", current_user.id)
 
     handoff = _get_open_handoff(conversation_id, tenant_id, db)
     if handoff is not None:
@@ -790,7 +879,8 @@ def close_conversation(
         pass
 
     tags_map = _load_tags([conversation_id], tenant_id, db)
-    return _conv_summary(conv, tags_map.get(conversation_id, []))
+    notes_count_map = _load_notes_count([conversation_id], tenant_id, db)
+    return _conv_summary(conv, tags_map.get(conversation_id, []), notes_count_map.get(conversation_id, 0))
 
 
 # ── Tags (Fase 25B) ───────────────────────────────────────────────────────────
@@ -870,3 +960,130 @@ def remove_tag(
     if ct:
         db.delete(ct)
         db.commit()
+
+
+# ── Notas internas (Fase 26B) ─────────────────────────────────────────────────
+
+
+def _record_status_change(
+    db: Session,
+    tenant_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    old_status: str,
+    new_status: str,
+    changed_by_user_id: uuid.UUID | None,
+) -> None:
+    """Registra un cambio de status en conversation_status_history."""
+    entry = ConversationStatusHistory(
+        tenant_id=tenant_id,
+        wa_conversation_id=conversation_id,
+        old_status=old_status,
+        new_status=new_status,
+        changed_by_user_id=changed_by_user_id,
+        changed_at=datetime.now(UTC),
+    )
+    db.add(entry)
+
+
+@router.post("/{conversation_id}/notes", response_model=NoteOut, status_code=201)
+def create_note(
+    conversation_id: uuid.UUID,
+    body: NoteCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> NoteOut:
+    """Crea una nota interna en la conversación."""
+    tenant_id = get_current_tenant_id()
+    _get_conversation(conversation_id, tenant_id, db)
+
+    if not body.text or not body.text.strip():
+        raise HTTPException(status_code=422, detail="text no puede estar vacío")
+
+    note = ConversationNote(
+        tenant_id=tenant_id,
+        wa_conversation_id=conversation_id,
+        user_id=current_user.id,
+        text=body.text.strip(),
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return NoteOut.model_validate(note)
+
+
+@router.get("/{conversation_id}/notes", response_model=list[NoteOut])
+def list_notes(
+    conversation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[NoteOut]:
+    """Lista todas las notas internas de la conversación."""
+    tenant_id = get_current_tenant_id()
+    _get_conversation(conversation_id, tenant_id, db)
+
+    with bypass_tenant_filter():
+        notes = (
+            db.query(ConversationNote)
+            .filter(
+                ConversationNote.tenant_id == tenant_id,
+                ConversationNote.wa_conversation_id == conversation_id,
+            )
+            .order_by(ConversationNote.created_at.asc())
+            .all()
+        )
+    return [NoteOut.model_validate(n) for n in notes]
+
+
+@router.delete("/{conversation_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(
+    conversation_id: uuid.UUID,
+    note_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Elimina una nota interna. Solo el autor puede borrar su nota."""
+    tenant_id = get_current_tenant_id()
+    _get_conversation(conversation_id, tenant_id, db)
+
+    with bypass_tenant_filter():
+        note = (
+            db.query(ConversationNote)
+            .filter(
+                ConversationNote.id == note_id,
+                ConversationNote.tenant_id == tenant_id,
+                ConversationNote.wa_conversation_id == conversation_id,
+            )
+            .first()
+        )
+    if note is None:
+        raise HTTPException(status_code=404, detail="Nota no encontrada")
+    if note.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Solo el autor puede eliminar su nota")
+    db.delete(note)
+    db.commit()
+
+
+# ── Historial de status (Fase 26C) ────────────────────────────────────────────
+
+
+@router.get("/{conversation_id}/status-history", response_model=list[StatusHistoryOut])
+def get_status_history(
+    conversation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[StatusHistoryOut]:
+    """Devuelve el historial de cambios de status de la conversación, ordenado por fecha."""
+    tenant_id = get_current_tenant_id()
+    _get_conversation(conversation_id, tenant_id, db)
+
+    with bypass_tenant_filter():
+        history = (
+            db.query(ConversationStatusHistory)
+            .filter(
+                ConversationStatusHistory.tenant_id == tenant_id,
+                ConversationStatusHistory.wa_conversation_id == conversation_id,
+            )
+            .order_by(ConversationStatusHistory.changed_at.asc())
+            .all()
+        )
+    return [StatusHistoryOut.model_validate(h) for h in history]
