@@ -50,12 +50,13 @@ def _make_connector_def(db: Session, name: str = "woocommerce") -> ConnectorDef:
 
 def _make_config(
     db: Session,
-    tenant: Tenant,
+    tenant_or_tuple,
     name: str = "woocommerce",
     status: str = "connected",
     with_creds: bool = True,
     webhook_secret: str = "secreto_test",
 ) -> ConnectorConfig:
+    tenant = tenant_or_tuple[0] if isinstance(tenant_or_tuple, tuple) else tenant_or_tuple
     defn = _make_connector_def(db, name)
     blob = None
     if with_creds:
@@ -80,10 +81,11 @@ def _make_config(
 
 def _make_order(
     db: Session,
-    tenant: Tenant,
+    tenant_or_tuple,
     config: ConnectorConfig,
     **kwargs,
 ) -> Order:
+    tenant = tenant_or_tuple[0] if isinstance(tenant_or_tuple, tuple) else tenant_or_tuple
     defaults = {
         "id": uuid.uuid4(),
         "tenant_id": tenant.id,
@@ -238,7 +240,8 @@ def test_webhook_info_woocommerce(db: Session, tenant_a, client_a):
     assert data["connector_name"] == "woocommerce"
     assert "/webhooks/woo/" in data["webhook_url"]
     assert str(config.id) in data["webhook_url"]
-    assert str(tenant_a.id) in data["webhook_url"]
+    tenant, _ = tenant_a
+    assert str(tenant.id) in data["webhook_url"]
 
 
 def test_webhook_info_shopify(db: Session, tenant_a, client_a):
