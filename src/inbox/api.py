@@ -50,6 +50,7 @@ class ConversationSummary(BaseModel):
     wa_contact_phone: str
     wa_contact_name: str
     status: str
+    assigned_user_id: uuid.UUID | None = None
     last_message_at: datetime | None
     turn_count: int
     created_at: datetime
@@ -264,6 +265,7 @@ def take_conversation(
         )
 
     conv.status = "agent"
+    conv.assigned_user_id = current_user.id
     db.add(conv)
 
     handoff = _get_open_handoff(conversation_id, tenant_id, db)
@@ -280,6 +282,19 @@ def take_conversation(
     db.commit()
     db.refresh(conv)
     return conv
+
+
+@router.post("/{conversation_id}/assign", response_model=ConversationSummary)
+def assign_conversation(
+    conversation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WaConversation:
+    """Asigna la conversación al usuario actual (status=agent).
+
+    Equivalente a /take; usa el nombre canónico del plan (Fase 8).
+    """
+    return take_conversation(conversation_id, current_user=current_user, db=db)
 
 
 @router.post("/{conversation_id}/reply", response_model=ReplyResponse)
@@ -317,6 +332,7 @@ def reply_conversation(
     # Si estaba en waiting_agent, lo promovemos a agent.
     if conv.status == "waiting_agent":
         conv.status = "agent"
+        conv.assigned_user_id = current_user.id
         db.add(conv)
         handoff = _get_open_handoff(conversation_id, tenant_id, db)
         if handoff and handoff.agent_user_id is None:
@@ -389,6 +405,7 @@ def close_conversation(
         )
 
     conv.status = "bot"
+    conv.assigned_user_id = None
     db.add(conv)
 
     handoff = _get_open_handoff(conversation_id, tenant_id, db)

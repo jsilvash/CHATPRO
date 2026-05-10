@@ -539,10 +539,10 @@ class TestAgentServiceLoop:
             from src.agent import service as agent_service
             agent_service.respond(db, conv, inbound)
 
-        # El built-in escalar_a_humano siempre se envía (tools no vacío)
+        # Los built-ins siempre se envían (escalar_a_humano + buscar_knowledge desde Fase 9)
         assert "tools" in sent_kwargs
         names = {t["name"] for t in sent_kwargs["tools"]}
-        assert names == {"escalar_a_humano"}
+        assert "escalar_a_humano" in names
 
         outbound = (
             db.query(WaMessage)

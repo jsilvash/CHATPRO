@@ -542,3 +542,243 @@ class TestEscalarAHumano:
             HandoffEvent.wa_conversation_id == conv.id
         ).first()
         assert ev.motivo == "solicitado_por_cliente"
+
+
+# ── AUTO-ESCALATE DESDE respond() ───────────────────────────────────────────
+
+
+class TestAutoEscalate:
+    """Verifica que respond() auto-transiciona a waiting_agent en casos de cap."""
+
+    def _make_setup(self, db, tenant_id, session_name, phone):
+        from src.agent.models import Persona
+
+        persona = Persona(
+            tenant_id=tenant_id,
+            name="Bot Auto",
+            system_prompt="Sos un asistente.",
+            tone="amigable",
+            locale="es-CL",
+            timezone="America/Santiago",
+            out_of_hours_message="",
+            business_hours_json={},
+            model_id="claude-sonnet-4-6",
+        )
+        db.add(persona)
+        db.flush()
+
+        wn = WaNumber(
+            tenant_id=tenant_id,
+            label="AutoBot",
+            waha_session_name=session_name,
+            persona_id=persona.id,
+        )
+        db.add(wn)
+        db.flush()
+
+        conv = WaConversation(
+            tenant_id=tenant_id,
+            wa_number_id=wn.id,
+            wa_contact_phone=phone,
+            status="bot",
+        )
+        db.add(conv)
+        db.flush()
+
+        inbound = WaMessage(
+            tenant_id=tenant_id,
+            wa_number_id=wn.id,
+            wa_conversation_id=conv.id,
+            direction="in",
+            text="Necesito ayuda urgente",
+            wa_message_id=f"wa-auto-{phone[-4:]}",
+            ack="",
+            raw_payload={},
+            llm_metadata={},
+        )
+        db.add(inbound)
+        db.flush()
+        return wn, conv, inbound
+
+    def test_max_tool_calls_auto_escala_a_waiting_agent(self, db, tenant_a):
+        """respond() con max_tool_calls transiciona a waiting_agent + HandoffEvent."""
+        from src.agent.service import respond
+        from src.messaging import dispatcher
+
+        tenant, _ = tenant_a
+        wn, conv, inbound = self._make_setup(
+            db, tenant.id, "auto-esc-tools", "56955550001"
+        )
+
+        # Simulamos que Claude devuelve max_tool_calls desde _run_agent_loop.
+        with patch("src.agent.service._run_agent_loop") as mock_loop, \
+             patch.object(dispatcher, "send_text") as mock_send:
+            mock_loop.return_value = (
+                "He llegado al límite de consultas. Un agente humano te ayudará.",
+                {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.001, "model": "claude-sonnet-4-6"},
+                "max_tool_calls",
+            )
+            mock_send.return_value = dispatcher.DispatchResult(
+                success=True, wa_message_id="wa-out-auto-001"
+            )
+            respond(db, conv, inbound)
+
+        db.refresh(conv)
+        assert conv.status == "waiting_agent"
+
+        ev = (
+            db.query(HandoffEvent)
+            .filter(HandoffEvent.wa_conversation_id == conv.id)
+            .first()
+        )
+        assert ev is not None
+        assert "max_tool_calls" in ev.motivo
+        assert ev.opened_at is not None
+        assert ev.closed_at is None
+
+    def test_max_cost_auto_escala_a_waiting_agent(self, db, tenant_a):
+        """respond() con max_cost transiciona a waiting_agent + HandoffEvent."""
+        from src.agent.service import respond
+        from src.messaging import dispatcher
+
+        tenant, _ = tenant_a
+        wn, conv, inbound = self._make_setup(
+            db, tenant.id, "auto-esc-cost", "56955550002"
+        )
+
+        with patch("src.agent.service._run_agent_loop") as mock_loop, \
+             patch.object(dispatcher, "send_text") as mock_send:
+            mock_loop.return_value = (
+                "La consulta superó el límite. Un agente humano te ayudará.",
+                {"input_tokens": 50, "output_tokens": 20, "cost_usd": 0.06, "model": "claude-sonnet-4-6"},
+                "max_cost",
+            )
+            mock_send.return_value = dispatcher.DispatchResult(
+                success=True, wa_message_id="wa-out-auto-002"
+            )
+            respond(db, conv, inbound)
+
+        db.refresh(conv)
+        assert conv.status == "waiting_agent"
+
+        ev = (
+            db.query(HandoffEvent)
+            .filter(HandoffEvent.wa_conversation_id == conv.id)
+            .first()
+        )
+        assert ev is not None
+        assert "max_cost" in ev.motivo
+
+    def test_hard_limit_auto_escala_a_waiting_agent(self, db, tenant_a):
+        """respond() con hard_limit transiciona a waiting_agent + HandoffEvent."""
+        from src.agent.service import respond
+        from src.messaging import dispatcher
+
+        tenant, _ = tenant_a
+        wn, conv, inbound = self._make_setup(
+            db, tenant.id, "auto-esc-hard", "56955550003"
+        )
+
+        with patch("src.agent.service._run_agent_loop") as mock_loop, \
+             patch.object(dispatcher, "send_text") as mock_send:
+            mock_loop.return_value = (
+                "Disculpá, no logro resolverlo desde acá. Te derivo a un humano.",
+                {"input_tokens": 100, "output_tokens": 10, "cost_usd": 0.02, "model": "claude-sonnet-4-6"},
+                "hard_limit",
+            )
+            mock_send.return_value = dispatcher.DispatchResult(
+                success=True, wa_message_id="wa-out-auto-003"
+            )
+            respond(db, conv, inbound)
+
+        db.refresh(conv)
+        assert conv.status == "waiting_agent"
+
+        ev = (
+            db.query(HandoffEvent)
+            .filter(HandoffEvent.wa_conversation_id == conv.id)
+            .first()
+        )
+        assert ev is not None
+        assert "hard_limit" in ev.motivo
+
+    def test_end_turn_no_escala(self, db, tenant_a):
+        """respond() con end_turn no crea HandoffEvent ni cambia status."""
+        from src.agent.service import respond
+        from src.messaging import dispatcher
+
+        tenant, _ = tenant_a
+        wn, conv, inbound = self._make_setup(
+            db, tenant.id, "auto-esc-ok", "56955550004"
+        )
+
+        with patch("src.agent.service._run_agent_loop") as mock_loop, \
+             patch.object(dispatcher, "send_text") as mock_send:
+            mock_loop.return_value = (
+                "Claro, te ayudo con tu consulta.",
+                {"input_tokens": 10, "output_tokens": 8, "cost_usd": 0.0005, "model": "claude-sonnet-4-6"},
+                "end_turn",
+            )
+            mock_send.return_value = dispatcher.DispatchResult(
+                success=True, wa_message_id="wa-out-auto-004"
+            )
+            respond(db, conv, inbound)
+
+        db.refresh(conv)
+        assert conv.status == "bot"
+
+        ev = (
+            db.query(HandoffEvent)
+            .filter(HandoffEvent.wa_conversation_id == conv.id)
+            .first()
+        )
+        assert ev is None
+
+
+# ── ASSIGNED_USER_ID ─────────────────────────────────────────────────────────
+
+
+class TestAssignedUserId:
+    """Verifica que assigned_user_id se gestiona correctamente en take/close/assign."""
+
+    def test_take_setea_assigned_user_id(self, inbox_setup, db):
+        owner = inbox_setup["owner"]
+        conv = inbox_setup["conv_wait"]
+        client = inbox_setup["client"]
+
+        r = client.post(f"/v1/inbox/{conv.id}/take")
+        assert r.status_code == 200
+        assert r.json()["assigned_user_id"] == str(owner.id)
+
+        db.refresh(conv)
+        assert conv.assigned_user_id == owner.id
+
+    def test_assign_endpoint_setea_assigned_user_id(self, inbox_setup, db, tenant_a):
+        tenant, _ = tenant_a
+        wn = inbox_setup["wn"]
+        conv = _make_conv(db, tenant.id, wn.id, "56900000070", status="waiting_agent")
+        _make_handoff(db, tenant.id, conv.id, "esperando")
+
+        owner = inbox_setup["owner"]
+        client = inbox_setup["client"]
+
+        r = client.post(f"/v1/inbox/{conv.id}/assign")
+        assert r.status_code == 200
+        assert r.json()["assigned_user_id"] == str(owner.id)
+        assert r.json()["status"] == "agent"
+
+        db.refresh(conv)
+        assert conv.assigned_user_id == owner.id
+
+    def test_close_limpia_assigned_user_id(self, inbox_setup, db, tenant_a):
+        tenant, _ = tenant_a
+        wn = inbox_setup["wn"]
+        conv = _make_conv(db, tenant.id, wn.id, "56900000071", status="agent")
+
+        client = inbox_setup["client"]
+        r = client.post(f"/v1/inbox/{conv.id}/close")
+        assert r.status_code == 200
+
+        db.refresh(conv)
+        assert conv.assigned_user_id is None
+        assert conv.status == "bot"
