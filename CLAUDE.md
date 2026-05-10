@@ -37,7 +37,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 18 | Shopify connector completo + búsqueda semántica en agente | ✅ Mergeada a main |
 | 19 | Connector API REST completa (CRUD + PATCH + webhook-info + sync-incr + orders) | ✅ Mergeada a main |
 | 20 | historial_pedidos_contacto real (orders reales + match email/phone + Shopify) | ✅ Mergeada a main |
-| 21 | Webhooks salientes conector + panel métricas + anti-hallucination logging | ✅ PR abierto |
+| 21 | Webhooks salientes conector + panel métricas + anti-hallucination logging | ✅ Mergeada a main |
+| 22 | Fix pre-existentes + rate limit + search semántico + hallucination_flag | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -205,6 +206,69 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Webhooks salientes de conectores | `_dispatch_event(event, payload)` privado en ambos connectors. Llama `emit_event()` del dispatcher existente (Fase 10) con la sesión DB interna del conector. `webhook_handler` separa `order.created` vs `order.updated` y `orders/create` vs `orders/updated`. No hay tabla nueva. | Fase 21 |
 | Stats endpoint conector | `GET /v1/connector-configs/{id}/stats` calcula products_count y orders_count con COUNT queries filtradas por tenant_id + connector_config_id. Schema `ConnectorStatsOut`. Aislamiento multi-tenant verificado. | Fase 21 |
 | Anti-hallucination logging completo | `run_agent_turn` loggea warning con `conversation_id`, `response_text[:300]` y `tool_results` completos cuando `hallucination_flag=True`. Sin migración de BD — solo log. | Fase 21 |
+| contact_id en WaConversation | `WaConversation.contact_id` columna FK nullable a `contacts.id`. Migración 0016. Necesaria para `tool_runner.collect_tools_for_conversation` que la pasa como `extra_kwarg` a los conectores. | Fase 22 |
+| Rate limiting sliding window | `src/agent/rate_limiter.py`: ventana in-memory (collections.deque) por `(tenant_id, wa_contact_phone)`. Fallback Redis si `REDIS_URL` configurado. Límites en Settings: `RATE_LIMIT_MESSAGES=10`, `RATE_LIMIT_WINDOW_SECONDS=60`. Inyectado al inicio de `respond()` — retorno silencioso si superado. | Fase 22 |
+| Search endpoint público | `GET /v1/connector-configs/{id}/search?q=<query>&max_results=5` llama `connector.search()` existente. Schemas `SearchResultOut` y `SearchResultsOut` en `src/connectors/api.py`. Requiere auth, aislamiento por tenant_id. | Fase 22 |
+| hallucination_flag persistido | `WaMessage.hallucination_flag Boolean default False` (migración 0017). `_run_agent_loop()` retorna 4-tupla con el flag. `_persist_outbound()` acepta y persiste el flag en el mensaje de salida. | Fase 22 |
+
+---
+
+## Prompt de arranque — Fase 23 (siguiente prioridad del backlog)
+
+```
+Retomo Fase 23 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Contexto:
+- Fase 22 (fix pre-existentes + rate limit + search semántico + hallucination_flag) mergeada a main. PR abierto.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase23-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18 + 19 + 20 + 21 + 22 funcionales.
+- Primero: leer SOLO CLAUDE.md. Nada más.
+
+- Estado tras Fase 22:
+    - contact_id en WaConversation (migración 0016). Tool runner puede pasar contact_id a conectores.
+    - Rate limiting sliding window por (tenant_id, wa_contact_phone). In-memory + fallback Redis.
+      Configuración: RATE_LIMIT_MESSAGES=10, RATE_LIMIT_WINDOW_SECONDS=60 en Settings.
+      Inyectado en service.respond() — retorno silencioso si superado.
+    - GET /v1/connector-configs/{id}/search?q=<query>&max_results=5 operativo.
+      Schemas SearchResultOut + SearchResultsOut en src/connectors/api.py.
+    - hallucination_flag en WaMessage (migración 0017, Boolean default False).
+      _run_agent_loop() retorna 4-tupla. _persist_outbound() lo persiste.
+    - test_connector_api_v19.py: fixture tenant_a desempacada en helpers _make_config/_make_order.
+    - test_agent_tools.py::test_collect_incluye_builtin: WaConversation.contact_id añadido.
+    - Fallos pre-existentes conocidos (NO causados por Fase 22):
+        * Ninguno conocido en este momento.
+
+- Opciones a implementar en Fase 23 (decidir con el usuario al arrancar):
+
+    A. WebSocket para inbox en tiempo real:
+       - Endpoint WebSocket /ws/inbox/{conversation_id} (autenticado con token en query param).
+       - Broadcast de nuevos mensajes a clientes conectados al abrir una conversación.
+       - State management en memoria (dict conversation_id → set[WebSocket]).
+       - Tests en tests/test_fase23_ws.py.
+
+    B. Export de datos del tenant (GDPR):
+       - POST /v1/tenants/me/export → dispara job Celery que empaqueta:
+           contacts, wa_messages, orders, contact_facts en ZIP (CSV por tabla).
+       - GET /v1/tenants/me/export/{job_id}/status → estado del job (queued/done/error).
+       - GET /v1/tenants/me/export/{job_id}/download → signed URL a S3 del ZIP.
+       - Tests en tests/test_fase23_export.py.
+
+    C. Soporte multi-idioma en personas (i18n):
+       - Agregar campos `locale_secondary TEXT[]` y `auto_detect_locale BOOLEAN` a Persona.
+       - Migración 0018.
+       - Prompt builder: si auto_detect_locale=True, incluir instrucción de detectar el idioma
+         del usuario y responder en ese idioma.
+       - Tests en tests/test_fase23_i18n.py.
+
+    D. Dashboard de métricas en tiempo real via SSE:
+       - GET /v1/metrics/stream → Server-Sent Events con contadores actualizados cada 30s:
+           messages_in, messages_out, conversations_active, llm_cost_today.
+       - Autenticado con JWT.
+       - Tests básicos de SSE en tests/test_fase23_sse.py.
+
+- NO tocar: src/knowledge/, src/billing/, src/inbox/ salvo indicación.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 24.
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 

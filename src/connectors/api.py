@@ -155,6 +155,22 @@ class ConnectorStatsOut(BaseModel):
     orders_count: int
 
 
+class SearchResultOut(BaseModel):
+    """Un resultado de búsqueda semántica de productos (Fase 22)."""
+    id: str
+    external_id: str
+    name: str
+    price: float | None = None
+    url: str | None = None
+    score: float
+
+
+class SearchResultsOut(BaseModel):
+    """Envoltura de la lista de resultados de búsqueda (Fase 22)."""
+    results: list[SearchResultOut]
+    total: int
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -559,3 +575,47 @@ def stats_conector(
         products_count=products_count,
         orders_count=orders_count,
     )
+
+
+@router.get("/connector-configs/{config_id}/search", response_model=SearchResultsOut)
+def search_productos(
+    config_id: uuid.UUID,
+    q: str = Query(..., min_length=1, description="Consulta de búsqueda"),
+    max_results: int = Query(5, ge=1, le=50, description="Máximo de resultados"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Búsqueda semántica de productos en el catálogo del conector."""
+    config = _get_config_or_404(config_id, current_user.tenant_id, db)
+
+    with bypass_tenant_filter():
+        defn = db.query(ConnectorDef).filter(ConnectorDef.id == config.connector_def_id).first()
+    if defn is None:
+        raise HTTPException(status_code=404, detail="Tipo de conector no encontrado")
+
+    try:
+        connector_cls = get_connector_class(defn.name)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Conector '{defn.name}' no registrado")
+
+    connector = connector_cls(
+        tenant_id=current_user.tenant_id,
+        config_id=config_id,
+        db=db,
+    )
+
+    raw_results = connector.search(q, top_k=max_results)
+
+    results = [
+        SearchResultOut(
+            id=r.id,
+            external_id=r.metadata.get("external_id", ""),
+            name=r.title,
+            price=r.metadata.get("price_sale") or r.metadata.get("price_regular"),
+            url=r.url,
+            score=r.score,
+        )
+        for r in raw_results
+    ]
+
+    return SearchResultsOut(results=results, total=len(results))

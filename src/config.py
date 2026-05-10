@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Voyage AI (Fase 9) — embeddings para RAG
     voyage_api_key: str = ""
 
+    # Rate limiting por tenant/contacto (Fase 22)
+    rate_limit_messages: int = 10
+    rate_limit_window_seconds: int = 60
+
 
 @lru_cache
 def get_settings() -> Settings:

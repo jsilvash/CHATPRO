@@ -24,8 +24,10 @@ from src.agent.facts_extractor import load_top_facts
 from src.agent.llm import call_claude_messages
 from src.agent.models import Persona
 from src.agent.prompt_builder import build_system_prompt, is_within_business_hours
+from src.agent.rate_limiter import is_rate_limited
 from src.billing.models import UsageMetric
 from src.billing.quota import check_quota
+from src.config import get_settings
 from src.agent.tool_runner import (
     DEFAULT_TOOL_TIMEOUT_S,
     collect_tools_for_conversation,
@@ -122,6 +124,7 @@ def _persist_outbound(
     wn: WaNumber,
     text: str,
     llm_metadata: dict | None = None,
+    hallucination_flag: bool = False,
 ) -> WaMessage:
     """Envía el texto via dispatcher y persiste el WaMessage outbound."""
     result = dispatcher.send_text(
@@ -144,6 +147,7 @@ def _persist_outbound(
         error="" if result.success else result.error,
         raw_payload=result.raw_response or {},
         llm_metadata=llm_metadata or {},
+        hallucination_flag=hallucination_flag,
     )
     if result.success:
         msg.sent_at = datetime.now(UTC)
@@ -241,11 +245,11 @@ def _run_agent_loop(
     persona: Persona,
     system_prompt: str,
     initial_messages: list[dict],
-) -> tuple[str, dict, str]:
+) -> tuple[str, dict, str, bool]:
     """Loop de Claude + tools.
 
-    Retorna ``(texto_respuesta, metadata_acumulada, motivo_fin)`` donde
-    ``motivo_fin`` es uno de: ``end_turn``, ``escalated``, ``max_tool_calls``,
+    Retorna ``(texto_respuesta, metadata_acumulada, motivo_fin, hallucination_flag)``
+    donde ``motivo_fin`` es uno de: ``end_turn``, ``escalated``, ``max_tool_calls``,
     ``max_cost``, ``unknown_stop``, ``hard_limit``.
     """
     tools_schemas, tools_index = collect_tools_for_conversation(db, conversation)
@@ -263,6 +267,7 @@ def _run_agent_loop(
 
     tool_calls = 0
     iterations = 0
+    all_tool_outputs: list[Any] = []
 
     while True:
         iterations += 1
@@ -270,7 +275,7 @@ def _run_agent_loop(
             logger.warning(
                 "agent loop: hard limit alcanzado conv=%s", conversation.id
             )
-            return _FALLBACK_ESCALATION_TEXT, aggregated, "hard_limit"
+            return _FALLBACK_ESCALATION_TEXT, aggregated, "hard_limit", False
 
         response, meta = call_claude_messages(
             final_system,
@@ -286,12 +291,22 @@ def _run_agent_loop(
                 conversation.id,
                 aggregated["cost_usd"],
             )
-            return _FALLBACK_ESCALATION_TEXT, aggregated, "max_cost"
+            return _FALLBACK_ESCALATION_TEXT, aggregated, "max_cost", False
 
         stop_reason = getattr(response, "stop_reason", None)
 
         if stop_reason == "end_turn":
-            return _extract_text(response), aggregated, "end_turn"
+            text = _extract_text(response)
+            hallucination = _check_anti_hallucination(text, all_tool_outputs)
+            if hallucination:
+                logger.warning(
+                    "anti-hallucination: precio no grounded | conversation_id=%s | "
+                    "respuesta=%r | tool_outputs=%r",
+                    conversation.id,
+                    text[:300],
+                    all_tool_outputs,
+                )
+            return text, aggregated, "end_turn", hallucination
 
         if stop_reason != "tool_use":
             logger.warning(
@@ -300,7 +315,7 @@ def _run_agent_loop(
                 conversation.id,
             )
             text = _extract_text(response) or _FALLBACK_ESCALATION_TEXT
-            return text, aggregated, "unknown_stop"
+            return text, aggregated, "unknown_stop", False
 
         # Procesar bloques tool_use.
         tool_use_blocks = [
@@ -325,7 +340,7 @@ def _run_agent_loop(
                     "agent loop: cap tool_calls alcanzado conv=%s",
                     conversation.id,
                 )
-                return _FALLBACK_ESCALATION_TEXT, aggregated, "max_tool_calls"
+                return _FALLBACK_ESCALATION_TEXT, aggregated, "max_tool_calls", False
 
             result = execute_tool(
                 tool_name=block.name,
@@ -346,6 +361,9 @@ def _run_agent_loop(
                 result=result,
             )
 
+            if result.output:
+                all_tool_outputs.append(result.output)
+
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -365,7 +383,7 @@ def _run_agent_loop(
         messages.append({"role": "user", "content": tool_results})
 
         if escalation_message is not None:
-            return escalation_message, aggregated, "escalated"
+            return escalation_message, aggregated, "escalated", False
 
 
 def _stringify_for_anthropic(output: dict) -> str:
@@ -422,6 +440,16 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
             )
             return
 
+        settings = get_settings()
+        if is_rate_limited(
+            conversation.tenant_id,
+            conversation.wa_contact_phone,
+            limit=settings.rate_limit_messages,
+            window_s=settings.rate_limit_window_seconds,
+            redis_url=settings.redis_url,
+        ):
+            return
+
         persona = _load_persona(db, conversation)
         if persona is None:
             return
@@ -454,7 +482,7 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
             logger.warning("check_quota LLM falló inesperadamente: %s", exc)
 
         t0 = time.perf_counter()
-        response_text, metadata, end_reason = _run_agent_loop(
+        response_text, metadata, end_reason, hallucination_flag = _run_agent_loop(
             db, conversation, inbound_msg, persona, system_prompt, messages
         )
         latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -476,7 +504,11 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
         # derivar a waiting_agent para que un humano retome.
         _auto_escalate_if_needed(db, conversation, end_reason)
 
-        _persist_outbound(db, conversation, wn, response_text, llm_metadata=metadata)
+        _persist_outbound(
+            db, conversation, wn, response_text,
+            llm_metadata=metadata,
+            hallucination_flag=hallucination_flag,
+        )
         _update_usage_metrics(db, conversation.tenant_id, metadata)
 
     except Exception:
