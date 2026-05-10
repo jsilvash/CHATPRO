@@ -34,7 +34,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 11 | Billing + métricas + cuotas | ✅ Mergeada a main |
 | 12 | Shopify connector (validación interfaz) | Pendiente |
 | 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ PR #10 mergeado |
-| 18 | Shopify connector completo + búsqueda semántica en agente | ✅ PR abierto |
+| 18 | Shopify connector completo + búsqueda semántica en agente | ✅ Mergeada a main |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
