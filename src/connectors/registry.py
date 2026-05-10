@@ -1,8 +1,8 @@
 """Registro global de conectores disponibles.
 
-Para agregar un nuevo conector (ej. Shopify):
-1. Crear ``src/connectors/shopify/connector.py`` con ``ShopifyConnector``.
-2. Importarlo aquí y agregarlo al dict ``CONNECTOR_REGISTRY``.
+Para agregar un nuevo conector:
+1. Crear ``src/connectors/<nombre>/connector.py`` con la clase concreta.
+2. Agregar la función de carga diferida y registrarla en ``_build_registry``.
 3. Nada más — el núcleo del Hub lo descubrirá automáticamente.
 """
 
@@ -11,11 +11,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.connectors.base import Connector
 
-# Importación diferida para evitar ciclos y permitir que cada conector
+# Importaciones diferidas para evitar ciclos y permitir que cada conector
 # sea opcional (podría no tener su dep instalada).
 def _load_woocommerce():
     from src.connectors.woocommerce.connector import WooCommerceConnector
     return WooCommerceConnector
+
+
+def _load_shopify():
+    from src.connectors.shopify.connector import ShopifyConnector
+    return ShopifyConnector
 
 
 CONNECTOR_REGISTRY: dict[str, type["Connector"]] = {}
@@ -25,6 +30,10 @@ def _build_registry() -> dict[str, type["Connector"]]:
     reg: dict[str, type["Connector"]] = {}
     try:
         reg["woocommerce"] = _load_woocommerce()
+    except Exception:
+        pass
+    try:
+        reg["shopify"] = _load_shopify()
     except Exception:
         pass
     return reg
