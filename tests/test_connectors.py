@@ -462,12 +462,15 @@ def test_api_configure_valida_campos(client_a):
     config_id = r_create.json()["id"]
 
     r = client_a.post(f"/v1/connector-configs/{config_id}/configure", json={
-        "site_url": "https://tienda.com",
-        "consumer_key": "ck_abc",
-        "consumer_secret": "cs_xyz",
+        "credentials": {
+            "site_url": "https://tienda.com",
+            "consumer_key": "ck_abc",
+            "consumer_secret": "cs_xyz",
+        }
     })
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
+    assert r.json()["connector_name"] == "woocommerce"
 
 
 def test_api_configure_url_invalida_retorna_400(client_a):
@@ -477,9 +480,7 @@ def test_api_configure_url_invalida_retorna_400(client_a):
     config_id = r_create.json()["id"]
 
     r = client_a.post(f"/v1/connector-configs/{config_id}/configure", json={
-        "site_url": "tienda.com",
-        "consumer_key": "ck",
-        "consumer_secret": "cs",
+        "credentials": {"site_url": "tienda.com", "consumer_key": "ck", "consumer_secret": "cs"}
     })
     assert r.status_code == 400
 
@@ -490,9 +491,7 @@ def test_api_test_connection_conectado(client_a):
     })
     config_id = r_create.json()["id"]
     client_a.post(f"/v1/connector-configs/{config_id}/configure", json={
-        "site_url": "https://tienda.com",
-        "consumer_key": "ck",
-        "consumer_secret": "cs",
+        "credentials": {"site_url": "https://tienda.com", "consumer_key": "ck", "consumer_secret": "cs"}
     })
 
     mock_resp = MagicMock()
@@ -528,9 +527,7 @@ def test_api_sync_full(client_a):
     })
     config_id = r_create.json()["id"]
     client_a.post(f"/v1/connector-configs/{config_id}/configure", json={
-        "site_url": "https://tienda.com",
-        "consumer_key": "ck",
-        "consumer_secret": "cs",
+        "credentials": {"site_url": "https://tienda.com", "consumer_key": "ck", "consumer_secret": "cs"}
     })
 
     mock_resp_ok = MagicMock()
@@ -624,9 +621,7 @@ def test_aislamiento_tenant_b_no_configura_config_de_a(client_a, client_b):
     config_id = r_create.json()["id"]
 
     r = client_b.post(f"/v1/connector-configs/{config_id}/configure", json={
-        "site_url": "https://evil.com",
-        "consumer_key": "ck",
-        "consumer_secret": "cs",
+        "credentials": {"site_url": "https://evil.com", "consumer_key": "ck", "consumer_secret": "cs"}
     })
     assert r.status_code == 404
 
