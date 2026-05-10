@@ -429,7 +429,7 @@ class ShopifyConnector(Connector):
 
         return WebhookVerification(valid=True)
 
-    # ── webhook_handler ───────────────────────────────────────────────────────
+    # ── webhook_handler (Fase 18 + Fase 21) ──────────────────────────────────
 
     def webhook_handler(self, payload: dict, headers: dict[str, str]) -> None:
         """Despacha eventos de Shopify según X-Shopify-Topic."""
@@ -439,6 +439,7 @@ class ShopifyConnector(Connector):
             stats: dict = {"created": 0, "updated": 0}
             product = self._upsert_product(payload, stats)
             self._enqueue_embed(product)
+            self._dispatch_event("connector.product_updated", payload)
 
         elif topic == "products/delete":
             external_id = str(payload.get("id", ""))
@@ -459,11 +460,27 @@ class ShopifyConnector(Connector):
                     else:
                         db.flush()
 
-        elif topic in ("orders/create", "orders/updated"):
+        elif topic == "orders/create":
             self._upsert_order(payload)
+            self._dispatch_event("connector.order_created", payload)
+
+        elif topic == "orders/updated":
+            self._upsert_order(payload)
+            self._dispatch_event("connector.order_updated", payload)
 
         else:
             logger.debug("webhook_handler Shopify: topic desconocido '%s', ignorado.", topic)
+
+    def _dispatch_event(self, event: str, payload: dict) -> None:
+        """Emite un evento a los webhooks salientes del tenant (Fase 21)."""
+        try:
+            from src.public_api.dispatcher import emit_event
+            with self._get_db() as db:
+                emitted = emit_event(self.tenant_id, event, payload, db)
+                if emitted and self._db_session is None:
+                    db.commit()
+        except Exception as exc:
+            logger.warning("No se pudo emitir evento '%s': %s", event, exc)
 
     # ── expose_tools ──────────────────────────────────────────────────────────
 

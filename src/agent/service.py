@@ -635,7 +635,13 @@ def run_agent_turn(
             )
             hallucination = _check_anti_hallucination(response_text, all_tool_results)
             if hallucination:
-                logger.warning("run_agent_turn: posible precio alucinado en respuesta")
+                logger.warning(
+                    "anti-hallucination: precio no grounded | conversation_id=%s | "
+                    "respuesta=%r | tool_results=%r",
+                    conversation_id,
+                    response_text[:300],
+                    all_tool_results,
+                )
             return AgentTurnResult(
                 response_text=response_text,
                 stop_reason="ok",

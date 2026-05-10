@@ -395,7 +395,7 @@ class WooCommerceConnector(Connector):
 
         return WebhookVerification(valid=True)
 
-    # ── webhook_handler (Fase 6) ──────────────────────────────────────────────
+    # ── webhook_handler (Fase 6 + Fase 21) ───────────────────────────────────
 
     def webhook_handler(self, payload: dict, headers: dict[str, str]) -> None:
         """Despacha eventos de WooCommerce según X-WC-Webhook-Topic."""
@@ -405,6 +405,7 @@ class WooCommerceConnector(Connector):
             stats: dict = {"created": 0, "updated": 0}
             product = self._upsert_product(payload, stats)
             self._enqueue_embed(product)
+            self._dispatch_event("connector.product_updated", payload)
 
         elif topic == "product.deleted":
             external_id = str(payload.get("id", ""))
@@ -425,11 +426,27 @@ class WooCommerceConnector(Connector):
                     else:
                         db.flush()
 
-        elif topic in ("order.created", "order.updated"):
+        elif topic == "order.created":
             self._upsert_order(payload)
+            self._dispatch_event("connector.order_created", payload)
+
+        elif topic == "order.updated":
+            self._upsert_order(payload)
+            self._dispatch_event("connector.order_updated", payload)
 
         else:
             logger.debug("webhook_handler: topic desconocido '%s', ignorado.", topic)
+
+    def _dispatch_event(self, event: str, payload: dict) -> None:
+        """Emite un evento a los webhooks salientes del tenant (Fase 21)."""
+        try:
+            from src.public_api.dispatcher import emit_event
+            with self._get_db() as db:
+                emitted = emit_event(self.tenant_id, event, payload, db)
+                if emitted and self._db_session is None:
+                    db.commit()
+        except Exception as exc:
+            logger.warning("No se pudo emitir evento '%s': %s", event, exc)
 
     def _enqueue_embed(self, product: Product) -> None:
         """Encola la tarea Celery embed_product para el producto dado."""
