@@ -44,7 +44,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
 | 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
 | 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ Mergeada a main |
-| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main |
+| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main (PR #24) |
 | 29 | Office hours + waiting time + menciones notas + métricas agente | ✅ PR abierto |
 
 ### Plan completo
@@ -251,6 +251,42 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Waiting since en conversaciones | `WaConversation.waiting_since` (DateTime nullable, migración 0027). Se setea en `_auto_escalate_if_needed()` al pasar a waiting_agent; se limpia en `take_conversation()` y `reply_conversation()` al pasar a agent. `ConversationSummary.waiting_minutes: int | None` calculado en `_conv_summary()`. `GET /v1/inbox?sort=waiting_time` ordena por `waiting_since ASC NULLS LAST`. `GET /v1/inbox/overdue?threshold_minutes=30` declarado ANTES de `/{conversation_id}`. | Fase 29 |
 | Menciones en notas (@usuario) | Migración 0028 agrega `mentions JSONB default '[]'` a `conversation_notes`. `_MENTION_PATTERN = re.compile(r"@([\w.+-]+(?:@[\w.-]+)?)")` en `inbox/api.py`. `_resolve_mentions(text, tenant_id, db)` retorna `list[uuid.UUID]` buscando por email exacto o full_name case-insensitive (solo usuarios activos del tenant). Persiste como lista de strings UUID en JSONB. Notifica via `notification_manager.broadcast_from_sync(tenant_id, {event: "note.mention", ...})`. `NoteOut.mentions: list[uuid.UUID]`. | Fase 29 |
 | Métricas de agente por período | `GET /v1/users/{user_id}/metrics?date_from=&date_to=` declarado ANTES de `/{user_id}` GET. Accesible por admin/owner O el propio usuario; 403 si agente ve a otro agente; 404 si user_id no pertenece al tenant. Calcula: `conversations_handled` (resolved_at en período), `avg_first_response_sec`, `avg_resolution_sec` (ambos en segundos float nullable), `messages_sent` (direction=out), `notes_created`, `busiest_hour` (hora 0-23 con más msgs enviados, nullable). Schema `AgentMetricsOut` en `src/api/v1/users.py`. | Fase 29 |
+
+---
+
+## Backlog futuro — fases propuestas (no priorizadas)
+
+> Estas fases no están planificadas con detalle todavía. Cuando se las retome, hacer
+> discovery + escribir MD propio antes de tocar código (regla del proyecto).
+
+### 🔴 Bloqueantes para v1 comercial (sin esto no se vende)
+
+| # | Título | Por qué bloquea |
+|---|---|---|
+| F1 | **Frontend Next.js (panel del tenant)** | Backend tiene 60+ endpoints REST sin UI. Un cliente no puede usar ChatPro hoy. Estimado: 5-10 fases (auth/login screen, alta de números, inbox, configuración, métricas, conectores, KB, agentes). |
+| F2 | **Deploy a producción + CI/CD** | Solo existe `docker-compose.yml` para dev. Falta Railway/Fly.io/k8s, pipeline de tests automáticos, migraciones automatizadas, secrets management. |
+| F3 | **Stripe billing (cobro real)** | Fase 11 hizo cuotas y métricas, pero el cobro automático mensual no existe. Sin esto no se factura. |
+| F4 | **Email transaccional** | No hay SMTP/SES/Resend integrado para signup, password recovery, alertas de cuota, notificaciones de agente. |
+| F5 | **Resolver §14 del plan** | Nombre definitivo del producto, dominio, providers de IA/storage/email — siguen sin decidirse formalmente. |
+
+### 🟡 Funcionalidades del backlog original sin implementar
+
+| # | Título | Origen |
+|---|---|---|
+| F6 | **Tool de agenda** (Google Calendar / Calendly) | Plan §3 Fase 7 mencionaba "Tool: agendar (calendar abstracto)" — no existe. |
+| F7 | **Tools custom por tenant** | HTTP request al backend del tenant con auth firmada. Plan §3 Fase 7. |
+| F8 | **Conectores e-commerce adicionales** | Tienda Nube, Magento, VTEX, Jumpseller. Hoy solo Woo + Shopify. |
+| F9 | **Conectores CRM** | HubSpot, Pipedrive, Salesforce. Plan §5. |
+| F10 | **Conectores helpdesk** | Zendesk, Intercom, Freshdesk. Plan §5. |
+| F11 | **Conectores KB extra** | Notion, Google Drive, Google Sheets, Confluence. Plan §5. |
+| F12 | **Sharding WAHA multi-instancia** | Hoy todos los tenants comparten `waha_node_id="default"`. El campo existe pero el sharder lógico no. Plan §4. |
+| F13 | **Observabilidad real** | OpenTelemetry + Prometheus + Loki — mencionado en plan §3, no implementado. |
+| F14 | **Audit log inmutable + retención configurable** | Plan §13.10 y §9 — parcial. |
+
+### 🟢 Numeración faltante (cosmético)
+
+Fases 13, 14, 15, 17 nunca existieron — saltos de numeración cuando se agregaron
+feature phases (16 retomo, 18+). No es deuda, es histórico.
 
 ---
 
@@ -493,7 +529,7 @@ Contexto:
        - Calcular tiempo_primera_respuesta (bot o agente) por conversación.
        - Calcular tiempo_de_resolución (apertura → close).
        - Endpoint: GET /v1/inbox/sla-report?date_from=&date_to= con percentiles p50/p90/p99.
-       - Persistir first_response_at / resolved_at en WaConversation (migración nueva).
+       - Persistir first_response_at / resolved_at en WaConversación (migración nueva).
 
     B. Etiquetas (tags) en conversaciones:
        - Tabla conversation_tags: {id, tenant_id, wa_conversation_id, tag, created_by_user_id}.
