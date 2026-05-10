@@ -27,6 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_user
@@ -142,6 +143,16 @@ class WebhookInfoOut(BaseModel):
     webhook_url: str
     webhook_secret: str
     connector_name: str
+
+
+class ConnectorStatsOut(BaseModel):
+    """Estadísticas de sincronización de un conector (Fase 21)."""
+    last_full_sync_at: datetime | None
+    last_incremental_sync_at: datetime | None
+    last_error: str | None
+    status: str
+    products_count: int
+    orders_count: int
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -504,3 +515,47 @@ def listar_ordenes(
         query = query.filter(Order.customer_email.ilike(f"%{customer_email}%"))
 
     return query.order_by(Order.created_at.desc()).offset(skip).limit(limit).all()
+
+
+# ── Endpoints — estadísticas de sync (Fase 21) ───────────────────────────────
+
+
+@router.get("/connector-configs/{config_id}/stats", response_model=ConnectorStatsOut)
+def stats_conector(
+    config_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Estadísticas de sincronización: conteos y última sync del conector."""
+    config = _get_config_or_404(config_id, current_user.tenant_id, db)
+
+    products_count: int = (
+        db.query(func.count(Product.id))
+        .filter(
+            Product.tenant_id == current_user.tenant_id,
+            Product.connector_config_id == config_id,
+            Product.deleted_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+
+    orders_count: int = (
+        db.query(func.count(Order.id))
+        .filter(
+            Order.tenant_id == current_user.tenant_id,
+            Order.connector_config_id == config_id,
+            Order.deleted_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+
+    return ConnectorStatsOut(
+        last_full_sync_at=config.last_full_sync_at,
+        last_incremental_sync_at=config.last_incremental_sync_at,
+        last_error=config.last_error,
+        status=config.status,
+        products_count=products_count,
+        orders_count=orders_count,
+    )

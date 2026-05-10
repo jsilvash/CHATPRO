@@ -36,7 +36,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 16 (retomo) | Fix fallos pre-existentes test_billing + test_knowledge | ✅ Mergeada a main |
 | 18 | Shopify connector completo + búsqueda semántica en agente | ✅ Mergeada a main |
 | 19 | Connector API REST completa (CRUD + PATCH + webhook-info + sync-incr + orders) | ✅ Mergeada a main |
-| 20 | historial_pedidos_contacto real (orders reales + match email/phone + Shopify) | ✅ PR abierto |
+| 20 | historial_pedidos_contacto real (orders reales + match email/phone + Shopify) | ✅ Mergeada a main |
+| 21 | Webhooks salientes conector + panel métricas + anti-hallucination logging | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -201,38 +202,72 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | connector_name en respuesta | `ConnectorConfigOut` incluye `connector_name` (enriquecido via JOIN a `ConnectorDef`). Helper `_enrich_config(config, db)`. | Fase 19 |
 | Webhook info endpoint | `GET /v1/connector-configs/{id}/webhook-info` devuelve `{webhook_url, webhook_secret, connector_name}`. URL construida con `settings.public_base_url`. | Fase 19 |
 | historial_pedidos_contacto real | Tabla `orders` existente (Fase 6). Match por `customer_email` OR `customer_phone`. `contact_id` pasa en `extra_kwargs` del tool_runner para resolver Contact. Shopify reutiliza la implementación de Woo (misma tabla). Migración 0015 agrega `customer_phone` y `placed_at` a `orders`. | Fase 20 |
+| Webhooks salientes de conectores | `_dispatch_event(event, payload)` privado en ambos connectors. Llama `emit_event()` del dispatcher existente (Fase 10) con la sesión DB interna del conector. `webhook_handler` separa `order.created` vs `order.updated` y `orders/create` vs `orders/updated`. No hay tabla nueva. | Fase 21 |
+| Stats endpoint conector | `GET /v1/connector-configs/{id}/stats` calcula products_count y orders_count con COUNT queries filtradas por tenant_id + connector_config_id. Schema `ConnectorStatsOut`. Aislamiento multi-tenant verificado. | Fase 21 |
+| Anti-hallucination logging completo | `run_agent_turn` loggea warning con `conversation_id`, `response_text[:300]` y `tool_results` completos cuando `hallucination_flag=True`. Sin migración de BD — solo log. | Fase 21 |
 
 ---
 
-## Prompt de arranque — Fase 21 (siguiente prioridad del backlog)
+## Prompt de arranque — Fase 22 (siguiente prioridad del backlog)
 
 ```
-Retomo Fase 21 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Retomo Fase 22 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- Fase 20 (historial_pedidos_contacto real) mergeada a main.
-- Rama nueva: git fetch origin main && git checkout -b claude/phase21-XXXXX origin/main
-- Main contiene Fases 0-12 + 16 + 18 + 19 + 20 funcionales.
-- Primero: leer SOLO CLAUDE.md. Identificar qué queda del plan.
+- Fase 21 (webhooks salientes conectores + stats + anti-hallucination logging) mergeada a main. PR #16.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase22-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18 + 19 + 20 + 21 funcionales.
+- Primero: leer SOLO CLAUDE.md. Nada más.
 
-- Estado tras Fase 20:
-    - Tabla orders ahora tiene customer_phone y placed_at (migración 0015).
-    - _upsert_order() en WooCommerce extrae billing.phone → customer_phone y date_created → placed_at.
-    - _upsert_order() en Shopify extrae billing_address.phone → customer_phone y created_at → placed_at.
-    - historial_pedidos_contacto en woocommerce/tools.py: real, query BD, match por email OR phone.
-    - historial_pedidos_contacto en shopify/tools.py: delega a la implementación de Woo.
-    - Shopify expose_tools() ahora tiene 3 tools (buscar_productos, consultar_stock_y_precio, historial_pedidos_contacto).
-    - tool_runner pasa contact_id en extra_kwargs de todos los connector tools.
-    - 16 tests nuevos en tests/test_historial_pedidos.py.
-    - test_shopify.py actualizado: assert len(tools) == 3.
+- Estado tras Fase 21:
+    - webhook_handler() en WooCommerce y Shopify llama _dispatch_event() tras _upsert_product/_upsert_order.
+    - Eventos soportados: "connector.product_updated", "connector.order_created", "connector.order_updated".
+    - _dispatch_event() privado en ambos connectors: llama emit_event() del dispatcher (src/public_api/dispatcher.py).
+    - order.created y order.updated separados en ambos connectors (antes estaban agrupados).
+    - GET /v1/connector-configs/{id}/stats → ConnectorStatsOut: products_count, orders_count, status, last_syncs.
+    - Anti-hallucination: run_agent_turn loggea warning con conversation_id + response[:300] + tool_results.
+    - 16 tests nuevos en tests/test_fase21.py.
+    - Fallos pre-existentes conocidos (NO causados por Fase 21):
+        * test_connector_api_v19.py (27 fallos): fixture tenant_a no desempacada correctamente.
+        * test_agent_tools.py::test_collect_incluye_builtin: WaConversation no tiene contact_id.
 
-- Opciones para Fase 21 (decidir con usuario):
-    A. Webhooks salientes para eventos de conectores
-       (product_updated / order_created → tenant WebhookOut via dispatcher existente en public_api).
-    B. Panel de métricas de conectores: stats de sync (items, errores, latencia) vía API.
-    C. Mejora anti-hallucination: validador post-respuesta que detecta precios no fundamentados en tool_results.
-    D. Otro ítem del backlog según prioridad del usuario.
+- Implementar las 4 opciones en esta sesión, en orden A → B → C → D:
+
+    A. Fix fallos pre-existentes (2 bugs independientes):
+       1. tests/test_connector_api_v19.py (27 fallos): el fixture `tenant_a` devuelve una
+          tupla (tenant, token) pero los tests lo usan como si fuera solo el tenant.
+          Solución: actualizar el fixture o los tests para desempacar correctamente.
+       2. tests/test_agent_tools.py::test_collect_incluye_builtin (1 fallo):
+          `WaConversation` no tiene columna `contact_id`.
+          Solución: añadir `contact_id = Column(UUID, nullable=True, index=True)` al modelo
+          WaConversation en src/models/wa_conversation.py y crear migración Alembic 0016.
+
+    B. Rate limiting por tenant/contacto:
+       - Sliding window in-memory (collections.deque) con fallback Redis si REDIS_URL configurado.
+       - Clave: (tenant_id, wa_contact_phone). Límites configurables en Settings:
+           RATE_LIMIT_MESSAGES: int = 10
+           RATE_LIMIT_WINDOW_SECONDS: int = 60
+       - Si se supera el límite, respond_to_message() retorna silenciosamente sin llamar al agente
+         (no envía respuesta al contacto, loggea WARNING con tenant_id + phone + count).
+       - Implementar en src/agent/rate_limiter.py, inyectar en src/agent/service.py::respond_to_message().
+       - Tests en tests/test_fase22_ratelimit.py.
+
+    C. Endpoint de búsqueda semántica pública:
+       - GET /v1/connector-configs/{id}/search?q=<query>&max_results=5
+       - Llamar connector.search(query, max_results) (ya existe en ambos connectors).
+       - Requiere autenticación (current_user), filtra por tenant_id igual que /stats.
+       - Responder con lista de productos: id, external_id, name, price, url, score (si disponible).
+       - Añadir schema SearchResultOut y SearchResultsOut en src/connectors/api.py.
+       - Tests en tests/test_fase22_search.py.
+
+    D. Persistir hallucination_flag en wa_messages:
+       - Añadir columna `hallucination_flag = Column(Boolean, default=False)` a WaMessage
+         en src/models/wa_message.py y crear migración Alembic 0017.
+       - En src/agent/service.py::respond_to_message(): tras llamar run_agent_turn(),
+         si result.hallucination_flag is True → setear hallucination_flag=True en el
+         WaMessage de salida antes del db.commit().
+       - Tests en tests/test_fase22_hallucination_flag.py.
 
 - NO tocar: src/knowledge/, src/billing/, src/inbox/ salvo indicación.
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 22.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 23.
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
