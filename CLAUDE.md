@@ -42,7 +42,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 23 | WebSocket inbox + Export GDPR + i18n personas + métricas SSE | ✅ Mergeada a main |
 | 24 | Webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar | ✅ Mergeada a main |
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
-| 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ PR abierto |
+| 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
+| 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -236,83 +237,146 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Notas internas en conversaciones | Tabla `conversation_notes` (migración 0024): tenant_id, wa_conversation_id FK, user_id FK, text, created_at. Index (tenant_id, wa_conversation_id). `POST /v1/inbox/{conv_id}/notes` → 201. `GET` → lista ASC. `DELETE /{note_id}` → 204 solo si `note.user_id == current_user.id`, sino 403. `ConversationSummary.notes_count: int` cargado via `_load_notes_count()` batch COUNT query. Incluido en list, get, close. | Fase 26 |
 | Historial de status de conversación | Tabla `conversation_status_history` (migración 0025): tenant_id, wa_conversation_id FK, old_status, new_status, changed_by_user_id FK nullable, changed_at. Helper `_record_status_change()` en `inbox/api.py`. Llamado en: `take_conversation` (waiting_agent→agent), `close_conversation` (X→bot), `reply_conversation` (waiting_agent→agent si promueve). `_auto_escalate_if_needed` en `service.py` registra bot→waiting_agent (changed_by_user_id=None). `GET /v1/inbox/{conv_id}/status-history` → lista ordenada por changed_at ASC. | Fase 26 |
 | Templates con variables en canned responses | Variables: `{{nombre}}`, `{{producto}}` etc. Regex `_VAR_PATTERN = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")`. Validación `_validate_variables()` en create y update: 422 si variable mal formada. `CannedResponseOut.variables: list[str]` = lista de nombres de variables en el texto. Helper `from_orm_with_vars()` en schema. `GET /v1/canned-responses/{id}/render` acepta query params como variables, devuelve `{rendered_text, variables_used, variables_missing, original_text}`. `GET /v1/canned-responses/search?q=` busca case-insensitive en shortcode OR text (declarado antes de `/{canned_id}`). | Fase 26 |
+| Filtros avanzados en inbox | `GET /v1/inbox` ahora acepta `assigned_user_id`, `date_from`, `date_to`, `search` (ILIKE en wa_contact_name OR wa_contact_phone). Paginación cambiada de `limit/offset` a `page/page_size` con `total_pages = ceil(total/page_size)` en la respuesta. `ConversationListResponse` añade `page`, `page_size`, `total_pages`. Aislamiento multi-tenant en todos los filtros vía `bypass_tenant_filter` + filtro explícito de `tenant_id`. | Fase 27 |
+| Bulk actions en inbox | Tres endpoints declarados ANTES de `/{conv_id}` para evitar conflictos de routing: `POST /v1/inbox/bulk-assign` (valida que user_id sea del mismo tenant, 422 si no), `POST /v1/inbox/bulk-tag` (upsert idempotente de etiqueta), `POST /v1/inbox/bulk-close` (status→bot + registra ConversationStatusHistory). Convs de otro tenant se ignoran silenciosamente (no error). Respuesta uniforme `{updated: N, errors: []}`. | Fase 27 |
+| Stats de usuario (agente) | `GET /v1/users/{user_id}/stats` declarado DESPUÉS de `/available-agents` y ANTES de `/{user_id}`. Accesible por admin/owner O el propio usuario. Calcula: `conversations_active` (status agent\|waiting_agent), `conversations_today` (status bot + resolved_at=hoy), `avg_first_response_sec` (avg de first_response_at - created_at, null si sin datos), `notes_count` (notas del usuario). 404 si el user_id no pertenece al tenant. | Fase 27 |
+| Webhook events notas e historial | `note.created` emitido via `emit_event()` en `create_note` (inbox/api.py) después del commit. Payload: `{event, conversation_id, note_id, user_id, text_preview[:100], tenant_id}`. Fire-and-forget con try/except. `conversation.status_changed` emitido en `_auto_escalate_if_needed` (agent/service.py) usando la `db` ya existente del caller (no abre sesión nueva). | Fase 27 |
 
 ---
 
-## Prompt de arranque — Fase 27 (siguiente prioridad del backlog)
+## Prompt de arranque — Fase 28 (siguiente prioridad del backlog)
 
 ```
-Retomo Fase 27 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Retomo Fase 28 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
 Contexto:
-- Fase 26 (auto-asignación round-robin + notas internas + historial status + templates variables) mergeada a main. PR #21.
-- Rama nueva: git fetch origin main && git checkout -b claude/phase27-XXXXX origin/main
-- Main contiene Fases 0-12 + 16 + 18-26 funcionales.
-- Primero: leer SOLO CLAUDE.md. Nada más.
+- Fase 27 (filtros inbox + bulk actions + stats usuario + webhook events notas) mergeada a main. PR #22.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase28-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-27 funcionales.
+- Primero: leer SOLO CLAUDE.md (sección "Decisiones de arquitectura" y este prompt). Nada más.
 
-- Estado tras Fase 26:
-    A. Auto-asignación round-robin:
-       - _find_agent_with_least_load(db, tenant_id) en service.py.
-       - _auto_escalate_if_needed asigna al agente con menos convs activas (agent|waiting_agent).
-       - Sin agentes → assigned_user_id=None, status=waiting_agent.
-       - GET /v1/users/available-agents → [{id, email, full_name, role, conv_count}] ordenado ASC.
-       - Tests en tests/test_fase26_auto_assign.py (9 tests).
-    B. Notas internas:
-       - Tabla conversation_notes (migración 0024).
-       - POST /v1/inbox/{conv_id}/notes → 201.
-       - GET /v1/inbox/{conv_id}/notes → lista ASC.
-       - DELETE /{note_id} → 204 solo autor, 403 si no es autor.
-       - ConversationSummary.notes_count: int (cargado via _load_notes_count batch query).
-       - Tests en tests/test_fase26_notes.py (8 tests).
-    C. Historial de status:
-       - Tabla conversation_status_history (migración 0025).
-       - _record_status_change() helper en inbox/api.py.
-       - Registrado en: take_conversation, close_conversation, reply_conversation (promueve waiting_agent→agent), _auto_escalate_if_needed (bot→waiting_agent, user_id=None).
-       - GET /v1/inbox/{conv_id}/status-history → lista ASC por changed_at.
-       - Tests en tests/test_fase26_status_history.py (7 tests).
-    D. Templates con variables:
-       - Variables {{nombre}}, {{producto}} etc. en canned responses.
-       - _validate_variables() en create y update → 422 si mal formada.
-       - CannedResponseOut.variables: list[str] vía from_orm_with_vars().
-       - GET /v1/canned-responses/{id}/render?var=val → {rendered_text, variables_used, variables_missing, original_text}.
-       - GET /v1/canned-responses/search?q= → busca en shortcode OR text (case-insensitive). Declarado antes de /{canned_id}.
-       - Tests en tests/test_fase26_canned_templates.py (12 tests).
-    - Migraciones 0024, 0025.
-    - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
-      (export_tenant_data importado localmente, no patcheable — no es regresión).
+Estado tras Fase 27 (ya en main):
+  A. Filtros avanzados inbox:
+     - GET /v1/inbox acepta: ?assigned_user_id=, ?date_from=, ?date_to=, ?search= (ILIKE nombre/teléfono).
+     - Paginación mejorada: ?page=, ?page_size=; respuesta incluye total_pages = ceil(total/page_size).
+     - ConversationListResponse: {items, total, page, page_size, total_pages}.
+     - Tests en tests/test_fase27_inbox_filters.py (9 tests).
+  B. Bulk actions:
+     - POST /v1/inbox/bulk-assign → valida user_id mismo tenant (422 si no); convs ajenas ignoradas.
+     - POST /v1/inbox/bulk-tag → upsert idempotente de etiqueta en conversation_tags.
+     - POST /v1/inbox/bulk-close → status→bot + ConversationStatusHistory para cada conv.
+     - Respuesta uniforme: {updated: N, errors: []}.
+     - Tests en tests/test_fase27_bulk_actions.py (9 tests).
+  C. Stats de usuario:
+     - GET /v1/users/{user_id}/stats: conversations_active, conversations_today, avg_first_response_sec, notes_count.
+     - Acceso: admin/owner O propio usuario. 404 si user_id no es del tenant.
+     - Tests en tests/test_fase27_user_management.py (7 tests).
+  D. Webhook events notas:
+     - note.created emitido en create_note (inbox/api.py) vía emit_event() con try/except.
+     - conversation.status_changed emitido en _auto_escalate_if_needed (service.py) usando db del caller.
+     - Tests en tests/test_fase27_webhook_events.py (5 tests).
+  - Total: 30 tests nuevos, 0 regresiones.
+  - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
+    (export_tenant_data importado localmente, no patcheable — no es regresión).
 
-- Implementar las 4 opciones en esta sesión, en orden A → B → C → D:
+Implementar las 4 opciones en ESTRICTO orden A→B→C→D SIN pausar entre ellas.
+Para cada opción: implementar código + tests + ejecutar los tests + avanzar solo si pasan.
+Comando de tests: DATABASE_URL=postgresql://chatpro:chatpro@localhost:5432/chatpro_test uv run pytest
 
-    A. Filtros avanzados en listado de inbox:
-       - GET /v1/inbox soportar filtros adicionales: ?assigned_user_id=, ?date_from=, ?date_to=,
-         ?search=<texto_libre> (búsqueda por wa_contact_name o wa_contact_phone).
-       - Paginación mejorada: devolver página actual + total_pages en la respuesta.
-       - Tests en tests/test_fase27_inbox_filters.py.
+────────────────────────────────────────────────────────────────
+OPCIÓN A — Dashboard de métricas del tenant (resumen ejecutivo)
+────────────────────────────────────────────────────────────────
+- GET /v1/metrics/summary
+  Requiere auth (cualquier rol). Calcula para el tenant:
+    {
+      "conversations_total": int,         ← total de convs del tenant (todos los status)
+      "conversations_active": int,        ← convs con status in (agent, waiting_agent)
+      "conversations_bot": int,           ← convs con status = bot
+      "conversations_closed_today": int,  ← convs con resolved_at = hoy
+      "messages_in_today": int,           ← wa_messages con direction=in y created_at=hoy
+      "messages_out_today": int,          ← wa_messages con direction=out y created_at=hoy
+      "agents_online": int,               ← usuarios con role in (agent, admin) y is_active=True
+      "unassigned_waiting": int,          ← convs con status=waiting_agent y assigned_user_id=NULL
+    }
+- Aislamiento multi-tenant en todas las queries.
+- Tests en tests/test_fase28_metrics_summary.py (mínimo 6 tests):
+  • valores correctos con datos de test
+  • unassigned_waiting correcto
+  • conversations_closed_today usa resolved_at hoy
+  • aislamiento tenant
+  • usuario sin convs devuelve ceros (no error)
 
-    B. Bulk actions en inbox:
-       - POST /v1/inbox/bulk-assign body: {conversation_ids: [uuid], user_id: uuid}
-         → asigna múltiples conversaciones al agente indicado. Devuelve {updated: N, errors: []}.
-       - POST /v1/inbox/bulk-tag body: {conversation_ids: [uuid], tag: str}
-         → aplica etiqueta a múltiples conversaciones.
-       - POST /v1/inbox/bulk-close body: {conversation_ids: [uuid]}
-         → cierra múltiples conversaciones (status→bot). Registra status_history para cada una.
-       - Tests en tests/test_fase27_bulk_actions.py.
+────────────────────────────────────────────────────────────────
+OPCIÓN B — PATCH /v1/users/{user_id}/deactivate
+────────────────────────────────────────────────────────────────
+- PATCH /v1/users/{user_id}/deactivate
+  Requiere rol admin/owner. No permite desactivarse a sí mismo (422).
+  Acción:
+    1. Pone user.is_active = False.
+    2. Reasigna las convs activas del usuario (status agent|waiting_agent) al agente con menos carga
+       usando _find_agent_with_least_load() (ya existe en service.py).
+    3. Devuelve {deactivated_user_id, reassigned_conversations: N, new_assignee_id: uuid|null}.
+- Si no hay agente disponible → las convs quedan assigned_user_id=None (no error).
+- Aislamiento: user_id debe pertenecer al mismo tenant, sino 404.
+- Tests en tests/test_fase28_user_deactivate.py (mínimo 7 tests):
+  • deactivate pone is_active=False
+  • convs activas se reasignan al agente con menos carga
+  • sin agentes disponibles → convs quedan sin asignar
+  • no puede desactivarse a sí mismo → 422
+  • user_id de otro tenant → 404
+  • convs de otro tenant no se reasignan (aislamiento)
+  • respuesta contiene reassigned_conversations correcto
 
-    C. Gestión de usuarios mejorada:
-       - GET /v1/users/{user_id}/stats → {conversations_active, conversations_today, avg_response_time_s, notes_count}.
-       - PATCH /v1/users/{user_id}/deactivate → pone is_active=False y re-asigna sus convs activas
-         al agente con menos carga (round-robin).
-       - Tests en tests/test_fase27_user_management.py.
+────────────────────────────────────────────────────────────────
+OPCIÓN C — Exportación de conversaciones del inbox (CSV)
+────────────────────────────────────────────────────────────────
+- GET /v1/inbox/export
+  Requiere auth. Acepta mismos filtros que GET /v1/inbox (status, wa_number_id, tag,
+  assigned_user_id, date_from, date_to, search).
+  Devuelve: Content-Type: text/csv; filename=inbox_export.csv
+  Columnas: id, wa_contact_name, wa_contact_phone, status, assigned_user_id,
+            created_at, last_message_at, resolved_at, tags, notes_count
+  Aislamiento: solo convs del tenant actual.
+  Sin límite de paginación (exporta todo el resultado).
+- Declarar ANTES de /{conv_id} (igual que las rutas /bulk-*).
+- Tests en tests/test_fase28_inbox_export.py (mínimo 6 tests):
+  • respuesta tiene Content-Type text/csv
+  • filas corresponden a las convs del tenant
+  • filtros funcionan en export (assigned_user_id, search)
+  • aislamiento tenant: otro tenant no ve las convs
+  • columnas correctas en el CSV
+  • export vacío devuelve solo cabecera (no error)
 
-    D. Webhook events para notas e historial:
-       - Emitir evento note.created cuando se crea una nota interna.
-         Payload: {conversation_id, note_id, user_id, text_preview: text[:100], tenant_id}.
-       - Emitir evento conversation.status_changed cuando cambia status (ya existe en take/close,
-         agregar también cuando lo hace _auto_escalate_if_needed).
-       - Tests en tests/test_fase27_webhook_events.py.
+────────────────────────────────────────────────────────────────
+OPCIÓN D — Búsqueda de contactos por teléfono/nombre
+────────────────────────────────────────────────────────────────
+- GET /v1/contacts/search?q=<texto>&limit=20
+  Busca en contacts.phone_e164 OR contacts.display_name (ILIKE).
+  Devuelve lista de contactos con sus datos básicos y número de convs.
+  Respuesta: [{id, phone_e164, display_name, email, created_at, conversations_count}]
+  Aislamiento: solo contactos del tenant actual.
+- El endpoint debe declararse ANTES de /{contact_id} en el router de contacts
+  (seguir mismo patrón que /available-agents y /bulk-* en otros routers).
+- Tests en tests/test_fase28_contact_search.py (mínimo 6 tests):
+  • búsqueda por teléfono (ILIKE)
+  • búsqueda por nombre (case-insensitive)
+  • conversations_count correcto
+  • aislamiento tenant
+  • limit respetado
+  • sin resultados devuelve lista vacía (no error)
 
-- NO tocar: src/knowledge/ salvo indicación.
-- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 28.
-- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+────────────────────────────────────────────────────────────────
+Al cerrar (tras completar D y que todos los tests pasen):
+  1. git add <archivos específicos>
+  2. git commit -m "feat(fase-28): dashboard métricas + deactivate user + export CSV + búsqueda contactos"
+  3. git push -u origin <rama>
+  4. Crear PR con descripción detallada de cada opción.
+  5. Actualizar CLAUDE.md:
+     - Tabla de fases: Fase 27 → ✅ Mergeada a main, Fase 28 → ✅ PR abierto
+     - Agregar decisiones arquitectónicas de Fase 28 a la sección correspondiente
+     - Reemplazar "Prompt de arranque — Fase 28" con "Prompt de arranque — Fase 29"
+  6. Generar el prompt de arranque para Fase 29 (regla recursiva).
+
+NO tocar: src/knowledge/, src/connectors/ salvo indicación explícita.
 ```
 
 ---

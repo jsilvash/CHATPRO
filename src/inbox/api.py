@@ -3,7 +3,10 @@
 Endpoints:
 - GET    /v1/inbox/sla-report                             — reporte SLA (Fase 25A)
 - GET    /v1/inbox/search                                 — búsqueda full-text (Fase 24C)
-- GET    /v1/inbox                                        — listar conversaciones
+- GET    /v1/inbox                                        — listar conversaciones (Fase 27A: filtros avanzados)
+- POST   /v1/inbox/bulk-assign                            — asignar múltiples convs (Fase 27B)
+- POST   /v1/inbox/bulk-tag                               — etiquetar múltiples convs (Fase 27B)
+- POST   /v1/inbox/bulk-close                             — cerrar múltiples convs (Fase 27B)
 - GET    /v1/inbox/{conversation_id}                      — detalle (incluye notes_count)
 - POST   /v1/inbox/{conversation_id}/take                 — asignarse la conversación
 - POST   /v1/inbox/{conversation_id}/reply                — enviar mensaje como agente
@@ -18,8 +21,9 @@ Endpoints:
 
 from __future__ import annotations
 
+import math
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
@@ -112,6 +116,9 @@ class ConversationDetail(BaseModel):
 class ConversationListResponse(BaseModel):
     items: list[ConversationSummary]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1
 
 
 class ReplyRequest(BaseModel):
@@ -503,12 +510,20 @@ def list_inbox(
     ),
     wa_number_id: uuid.UUID | None = Query(None),
     tag: str | None = Query(None, description="Filtrar por etiqueta"),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    assigned_user_id: uuid.UUID | None = Query(None, description="Filtrar por agente asignado (Fase 27A)"),
+    date_from: date | None = Query(None, description="Fecha de inicio (ISO8601, filtra por created_at)"),
+    date_to: date | None = Query(None, description="Fecha de fin (ISO8601, filtra por created_at)"),
+    search: str | None = Query(None, description="Búsqueda por nombre o teléfono del contacto"),
+    page: int = Query(1, ge=1, description="Página (empieza en 1)"),
+    page_size: int = Query(50, ge=1, le=200, description="Resultados por página"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ConversationListResponse:
-    """Lista conversaciones del tenant con filtros opcionales."""
+    """Lista conversaciones del tenant con filtros opcionales.
+
+    Filtros Fase 27A: assigned_user_id, date_from, date_to, search (nombre o teléfono).
+    Paginación mejorada: page, page_size, total_pages en la respuesta.
+    """
     tenant_id = get_current_tenant_id()
 
     with bypass_tenant_filter():
@@ -532,10 +547,31 @@ def list_inbox(
                 )
             )
 
+        # Filtros Fase 27A.
+        if assigned_user_id is not None:
+            q = q.filter(WaConversation.assigned_user_id == assigned_user_id)
+
+        if date_from is not None:
+            df_dt = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+            q = q.filter(WaConversation.created_at >= df_dt)
+
+        if date_to is not None:
+            dt_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
+            q = q.filter(WaConversation.created_at <= dt_dt)
+
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                WaConversation.wa_contact_name.ilike(like)
+                | WaConversation.wa_contact_phone.ilike(like)
+            )
+
         q = q.order_by(WaConversation.last_message_at.desc().nullslast())
         total = q.count()
-        items = q.offset(offset).limit(limit).all()
+        offset = (page - 1) * page_size
+        items = q.offset(offset).limit(page_size).all()
 
+    total_pages = max(1, math.ceil(total / page_size))
     conv_ids = [c.id for c in items]
     tags_map = _load_tags(conv_ids, tenant_id, db)
     notes_count_map = _load_notes_count(conv_ids, tenant_id, db)
@@ -543,7 +579,168 @@ def list_inbox(
         _conv_summary(c, tags_map.get(c.id, []), notes_count_map.get(c.id, 0))
         for c in items
     ]
-    return ConversationListResponse(items=summaries, total=total)
+    return ConversationListResponse(
+        items=summaries,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+# ── Bulk actions (Fase 27B) ───────────────────────────────────────────────────
+# IMPORTANTE: declaradas ANTES de /{conversation_id} para evitar conflictos de routing.
+
+
+class BulkAssignRequest(BaseModel):
+    conversation_ids: list[uuid.UUID]
+    user_id: uuid.UUID
+
+
+class BulkTagRequest(BaseModel):
+    conversation_ids: list[uuid.UUID]
+    tag: str
+
+
+class BulkCloseRequest(BaseModel):
+    conversation_ids: list[uuid.UUID]
+
+
+class BulkActionResponse(BaseModel):
+    updated: int
+    errors: list[str] = []
+
+
+@router.post("/bulk-assign", response_model=BulkActionResponse)
+def bulk_assign(
+    body: BulkAssignRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkActionResponse:
+    """Asigna múltiples conversaciones al usuario indicado.
+
+    El user_id debe pertenecer al mismo tenant, sino 422.
+    Conversaciones de otros tenants se ignoran silenciosamente.
+    """
+    tenant_id = get_current_tenant_id()
+
+    # Validar que el user_id pertenece al mismo tenant.
+    with bypass_tenant_filter():
+        target_user = db.query(User).filter(
+            User.id == body.user_id,
+            User.tenant_id == tenant_id,
+        ).first()
+    if target_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El user_id indicado no pertenece a este tenant.",
+        )
+
+    with bypass_tenant_filter():
+        convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.id.in_(body.conversation_ids),
+                WaConversation.tenant_id == tenant_id,
+            )
+            .all()
+        )
+
+    updated = 0
+    for conv in convs:
+        conv.assigned_user_id = body.user_id
+        db.add(conv)
+        updated += 1
+
+    db.commit()
+    return BulkActionResponse(updated=updated)
+
+
+@router.post("/bulk-tag", response_model=BulkActionResponse)
+def bulk_tag(
+    body: BulkTagRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkActionResponse:
+    """Aplica una etiqueta a múltiples conversaciones (upsert idempotente).
+
+    Conversaciones de otros tenants se ignoran silenciosamente.
+    """
+    tenant_id = get_current_tenant_id()
+    tag_value = (body.tag or "").strip().lower()
+    if not tag_value:
+        raise HTTPException(status_code=422, detail="tag no puede estar vacío")
+    if len(tag_value) > 64:
+        raise HTTPException(status_code=422, detail="tag demasiado largo (máx 64 chars)")
+
+    with bypass_tenant_filter():
+        convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.id.in_(body.conversation_ids),
+                WaConversation.tenant_id == tenant_id,
+            )
+            .all()
+        )
+
+    updated = 0
+    for conv in convs:
+        with bypass_tenant_filter():
+            existing = db.query(ConversationTag).filter(
+                ConversationTag.tenant_id == tenant_id,
+                ConversationTag.wa_conversation_id == conv.id,
+                ConversationTag.tag == tag_value,
+            ).first()
+        if existing is None:
+            ct = ConversationTag(
+                tenant_id=tenant_id,
+                wa_conversation_id=conv.id,
+                tag=tag_value,
+                created_by_user_id=current_user.id,
+            )
+            db.add(ct)
+        updated += 1
+
+    db.commit()
+    return BulkActionResponse(updated=updated)
+
+
+@router.post("/bulk-close", response_model=BulkActionResponse)
+def bulk_close(
+    body: BulkCloseRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkActionResponse:
+    """Cierra múltiples conversaciones (status→bot). Registra historial para cada una.
+
+    Conversaciones de otros tenants se ignoran silenciosamente.
+    """
+    tenant_id = get_current_tenant_id()
+    now = datetime.now(UTC)
+
+    with bypass_tenant_filter():
+        convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.id.in_(body.conversation_ids),
+                WaConversation.tenant_id == tenant_id,
+            )
+            .all()
+        )
+
+    updated = 0
+    for conv in convs:
+        old_status = conv.status
+        conv.status = "bot"
+        conv.assigned_user_id = None
+        if conv.resolved_at is None:
+            conv.resolved_at = now
+        db.add(conv)
+        _record_status_change(db, tenant_id, conv.id, old_status, "bot", current_user.id)
+        updated += 1
+
+    db.commit()
+    return BulkActionResponse(updated=updated)
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
@@ -1008,6 +1205,27 @@ def create_note(
     db.add(note)
     db.commit()
     db.refresh(note)
+
+    # Webhook event note.created (Fase 27D) — fire-and-forget.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        _emit(
+            tenant_id,
+            "note.created",
+            {
+                "event": "note.created",
+                "conversation_id": str(conversation_id),
+                "note_id": str(note.id),
+                "user_id": str(current_user.id),
+                "text_preview": note.text[:100],
+                "tenant_id": str(tenant_id),
+            },
+            db,
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return NoteOut.model_validate(note)
 
 

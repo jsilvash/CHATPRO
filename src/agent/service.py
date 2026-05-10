@@ -555,6 +555,24 @@ def _auto_escalate_if_needed(
     except Exception:
         pass
 
+    # Webhook saliente conversation.status_changed (Fase 27D) — fire-and-forget.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        _emit(
+            conversation.tenant_id,
+            "conversation.status_changed",
+            {
+                "conversation_id": str(conversation.id),
+                "tenant_id": str(conversation.tenant_id),
+                "new_status": "waiting_agent",
+                "wa_contact_phone": conversation.wa_contact_phone,
+                "assigned_user_id": str(conversation.assigned_user_id) if conversation.assigned_user_id else None,
+            },
+            db,
+        )
+    except Exception:
+        pass
+
 
 def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -> None:
     """Genera y persiste la respuesta del bot para un mensaje inbound.
