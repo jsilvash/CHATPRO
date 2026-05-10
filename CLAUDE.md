@@ -44,7 +44,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
 | 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
 | 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ Mergeada a main |
-| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ PR abierto |
+| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main (PR #24) |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -246,6 +246,42 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Deactivate user endpoint | `PATCH /v1/users/{user_id}/deactivate` en `src/api/v1/users.py`, declarado ANTES de `GET /{user_id}`. Solo admin/owner. 422 si autodesactivación. Reasigna convs activas vía `_find_agent_with_least_load()` (ya en service.py). Si no hay agentes → convs quedan `assigned_user_id=None`. Respuesta: `{deactivated_user_id, reassigned_conversations, new_assignee_id}`. | Fase 28 |
 | Export CSV inbox | `GET /v1/inbox/export` declarado ANTES de `/{conversation_id}` (mismo patrón que /bulk-*). Acepta mismos filtros que GET /v1/inbox. Sin paginación. Content-Type text/csv. Columnas: id, wa_contact_name, wa_contact_phone, status, assigned_user_id, created_at, last_message_at, resolved_at, tags, notes_count. Tags separadas por `\|`. | Fase 28 |
 | Búsqueda contactos | `GET /v1/contacts/search?q=&limit=` declarado ANTES de `/{contact_id}` en `src/contacts/api.py`. ILIKE en `phone_e164 OR display_name`. `conversations_count` calculado via COUNT en `WaConversation.contact_id`. Schema `ContactSearchOut`. Aislamiento por `current_user.tenant_id`. | Fase 28 |
+
+---
+
+## Backlog futuro — fases propuestas (no priorizadas)
+
+> Estas fases no están planificadas con detalle todavía. Cuando se las retome, hacer
+> discovery + escribir MD propio antes de tocar código (regla del proyecto).
+
+### 🔴 Bloqueantes para v1 comercial (sin esto no se vende)
+
+| # | Título | Por qué bloquea |
+|---|---|---|
+| F1 | **Frontend Next.js (panel del tenant)** | Backend tiene 60+ endpoints REST sin UI. Un cliente no puede usar ChatPro hoy. Estimado: 5-10 fases (auth/login screen, alta de números, inbox, configuración, métricas, conectores, KB, agentes). |
+| F2 | **Deploy a producción + CI/CD** | Solo existe `docker-compose.yml` para dev. Falta Railway/Fly.io/k8s, pipeline de tests automáticos, migraciones automatizadas, secrets management. |
+| F3 | **Stripe billing (cobro real)** | Fase 11 hizo cuotas y métricas, pero el cobro automático mensual no existe. Sin esto no se factura. |
+| F4 | **Email transaccional** | No hay SMTP/SES/Resend integrado para signup, password recovery, alertas de cuota, notificaciones de agente. |
+| F5 | **Resolver §14 del plan** | Nombre definitivo del producto, dominio, providers de IA/storage/email — siguen sin decidirse formalmente. |
+
+### 🟡 Funcionalidades del backlog original sin implementar
+
+| # | Título | Origen |
+|---|---|---|
+| F6 | **Tool de agenda** (Google Calendar / Calendly) | Plan §3 Fase 7 mencionaba "Tool: agendar (calendar abstracto)" — no existe. |
+| F7 | **Tools custom por tenant** | HTTP request al backend del tenant con auth firmada. Plan §3 Fase 7. |
+| F8 | **Conectores e-commerce adicionales** | Tienda Nube, Magento, VTEX, Jumpseller. Hoy solo Woo + Shopify. |
+| F9 | **Conectores CRM** | HubSpot, Pipedrive, Salesforce. Plan §5. |
+| F10 | **Conectores helpdesk** | Zendesk, Intercom, Freshdesk. Plan §5. |
+| F11 | **Conectores KB extra** | Notion, Google Drive, Google Sheets, Confluence. Plan §5. |
+| F12 | **Sharding WAHA multi-instancia** | Hoy todos los tenants comparten `waha_node_id="default"`. El campo existe pero el sharder lógico no. Plan §4. |
+| F13 | **Observabilidad real** | OpenTelemetry + Prometheus + Loki — mencionado en plan §3, no implementado. |
+| F14 | **Audit log inmutable + retención configurable** | Plan §13.10 y §9 — parcial. |
+
+### 🟢 Numeración faltante (cosmético)
+
+Fases 13, 14, 15, 17 nunca existieron — saltos de numeración cuando se agregaron
+feature phases (16 retomo, 18+). No es deuda, es histórico.
 
 ---
 
