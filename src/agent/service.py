@@ -162,6 +162,24 @@ def _persist_outbound(
 
     db.add(msg)
     db.commit()
+
+    # Broadcast WS a clientes conectados al inbox de esta conversación (Fase 23A).
+    try:
+        from src.messaging.ws_manager import manager as ws_manager
+        ws_manager.broadcast_from_sync(
+            conversation.id,
+            {
+                "event": "message",
+                "message_id": str(msg.id),
+                "direction": msg.direction,
+                "text": msg.text,
+                "source": "bot",
+                "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
+            },
+        )
+    except Exception:
+        pass
+
     return msg
 
 

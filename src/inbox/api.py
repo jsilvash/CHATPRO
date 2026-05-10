@@ -381,6 +381,23 @@ def reply_conversation(
     db.commit()
     db.refresh(msg)
 
+    # Broadcast WS a clientes conectados al inbox de esta conversación (Fase 23A).
+    try:
+        from src.messaging.ws_manager import manager as ws_manager
+        ws_manager.broadcast_from_sync(
+            conv.id,
+            {
+                "event": "message",
+                "message_id": str(msg.id),
+                "direction": msg.direction,
+                "text": body.text,
+                "source": "agent",
+                "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
+            },
+        )
+    except Exception:
+        pass
+
     return ReplyResponse(
         message_id=msg.id,
         wa_message_id=result.wa_message_id,

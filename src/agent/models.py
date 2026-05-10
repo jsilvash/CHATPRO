@@ -10,7 +10,7 @@ usage_metrics movido a src.billing.models (Fase 11).
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -59,6 +59,16 @@ class Persona(Base, TimestampMixin):
     # Modelo Claude a usar. Default: claude-sonnet-4-6
     model_id: Mapped[str] = mapped_column(
         sa.Text, nullable=False, server_default="claude-sonnet-4-6"
+    )
+
+    # Soporte multi-idioma (Fase 23C):
+    # locale_secondary: idiomas adicionales soportados, ej: ["en", "pt"]
+    locale_secondary: Mapped[list[str]] = mapped_column(
+        ARRAY(sa.Text), nullable=False, server_default=sa.text("'{}'::text[]")
+    )
+    # auto_detect_locale: si True, el bot detecta el idioma del usuario y responde en él
+    auto_detect_locale: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default="false"
     )
 
 
