@@ -157,3 +157,86 @@ export interface SLAReport {
   p50_resolution_seconds: number | null
   p90_resolution_seconds: number | null
 }
+
+// Conectores
+export interface ConnectorDefOut {
+  id: string
+  name: string
+  kind: string
+  version: string
+  enabled: boolean
+}
+
+export interface ConnectorConfigOut {
+  id: string
+  tenant_id: string
+  connector_def_id: string
+  connector_name: string | null
+  display_name: string
+  status: string
+  last_full_sync_at: string | null
+  last_incremental_sync_at: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ConnectorStatsOut {
+  last_full_sync_at: string | null
+  last_incremental_sync_at: string | null
+  last_error: string | null
+  status: string
+  products_count: number
+  orders_count: number
+}
+
+export interface SearchResultOut {
+  id: string
+  external_id: string
+  name: string
+  price: number | null
+  url: string | null
+  score: number
+}
+
+export interface SearchResultsOut {
+  results: SearchResultOut[]
+  total: number
+}
+
+// Canned responses
+export interface CannedResponseOut {
+  id: string
+  tenant_id: string
+  shortcode: string
+  text: string
+  variables: string[]
+  created_by_user_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CannedResponseListOut {
+  items: CannedResponseOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface RenderOut {
+  id: string
+  shortcode: string
+  original_text: string
+  rendered_text: string
+  variables_used: Record<string, string>
+  variables_missing: string[]
+}
+
+// Métricas SSE
+export interface StreamMetrics {
+  messages_in_today: number
+  messages_out_today: number
+  conversations_active: number
+  llm_cost_cents_today: number
+  timestamp: string
+}
