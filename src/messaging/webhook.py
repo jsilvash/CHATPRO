@@ -120,8 +120,8 @@ def _get_or_create_conversation(
     wn: WaNumber,
     contact_phone: str,
     contact_name: str = "",
-) -> WaConversation:
-    """Devuelve la conversación existente o la crea (idempotente)."""
+) -> tuple[WaConversation, bool]:
+    """Devuelve (conversación, es_nueva). Idempotente por wa_number_id + phone."""
     conv = (
         db.query(WaConversation)
         .filter(
@@ -131,7 +131,7 @@ def _get_or_create_conversation(
         .first()
     )
     if conv:
-        return conv
+        return conv, False
 
     conv = WaConversation(
         tenant_id=wn.tenant_id,
@@ -141,7 +141,7 @@ def _get_or_create_conversation(
     )
     db.add(conv)
     db.flush()
-    return conv
+    return conv, True
 
 
 def _dispatch_message(
@@ -197,7 +197,7 @@ def _dispatch_message(
         return {"ok": True, "skipped": "no_contact_phone"}
 
     with bypass_tenant_filter():
-        conv = _get_or_create_conversation(db, wn, contact_phone, notify_name)
+        conv, is_new = _get_or_create_conversation(db, wn, contact_phone, notify_name)
         conv.last_message_at = timestamp or _utcnow()
         if not conv.wa_contact_name and notify_name:
             conv.wa_contact_name = notify_name
@@ -219,6 +219,38 @@ def _dispatch_message(
         db.add(conv)
         db.commit()
         db.refresh(msg)
+
+    # Webhooks salientes (Fase 24A) — fire-and-forget, errores silenciosos.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        if is_new:
+            _emit(
+                wn.tenant_id,
+                "conversation.created",
+                {
+                    "conversation_id": str(conv.id),
+                    "tenant_id": str(wn.tenant_id),
+                    "wa_number_id": str(wn.id),
+                    "wa_contact_phone": conv.wa_contact_phone,
+                    "wa_contact_name": conv.wa_contact_name,
+                },
+                db,
+            )
+        _emit(
+            wn.tenant_id,
+            "message.received",
+            {
+                "conversation_id": str(conv.id),
+                "tenant_id": str(wn.tenant_id),
+                "message_id": str(msg.id),
+                "wa_contact_phone": conv.wa_contact_phone,
+                "text": body,
+            },
+            db,
+        )
+        db.commit()
+    except Exception:
+        pass
 
     # Limpiar el typing del contacto ahora que envió el mensaje.
     from src.messaging.typing_state import clear_typing

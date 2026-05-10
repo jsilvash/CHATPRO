@@ -7,16 +7,17 @@
 - ``POST   /v1/wa-numbers/{id}/pairing-code``  — código de 8 chars en lugar de QR.
 - ``POST   /v1/wa-numbers/{id}/send``          — envía texto a un destinatario.
 - ``POST   /v1/wa-numbers/{id}/logout``        — cierra sesión WAHA.
+- ``GET    /v1/wa-numbers/{id}/metrics``        — métricas de mensajes/conversaciones por período.
 """
 
 from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
@@ -102,6 +103,22 @@ class PairingCodeRequest(BaseModel):
 
 class PairingCodeResponse(BaseModel):
     code: str
+
+
+class TopContactEntry(BaseModel):
+    phone: str
+    count: int
+
+
+class WaNumberMetricsOut(BaseModel):
+    wa_number_id: uuid.UUID
+    date_from: date
+    date_to: date
+    messages_in: int
+    messages_out: int
+    conversations_total: int
+    conversations_active: int
+    top_contacts: list[TopContactEntry]
 
 
 # ────────────────────────────────────────────────────────────
@@ -398,6 +415,122 @@ def send_text(
         success=True,
         wa_message_id=result.wa_message_id,
         message_id=msg.id,
+    )
+
+
+@router.get("/{wa_number_id}/metrics", response_model=WaNumberMetricsOut)
+def get_wa_number_metrics(
+    wa_number_id: uuid.UUID,
+    date_from: date | None = Query(None, description="Inicio del período (YYYY-MM-DD)"),
+    date_to: date | None = Query(None, description="Fin del período (YYYY-MM-DD)"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WaNumberMetricsOut:
+    """Devuelve métricas de mensajes y conversaciones para un WaNumber en un período."""
+    tenant_id = get_current_tenant_id()
+    wn = _ensure_owned(db, wa_number_id, tenant_id)
+
+    today = date.today()
+    df = date_from or (today - timedelta(days=30))
+    dt = date_to or today
+
+    from sqlalchemy import func, and_
+    from datetime import datetime, timezone
+
+    df_dt = datetime(df.year, df.month, df.day, tzinfo=timezone.utc)
+    dt_dt = datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=timezone.utc)
+
+    msgs_in = (
+        db.query(func.count(WaMessage.id))
+        .filter(
+            WaMessage.wa_number_id == wn.id,
+            WaMessage.tenant_id == tenant_id,
+            WaMessage.direction == "in",
+            WaMessage.created_at >= df_dt,
+            WaMessage.created_at <= dt_dt,
+        )
+        .scalar()
+        or 0
+    )
+    msgs_out = (
+        db.query(func.count(WaMessage.id))
+        .filter(
+            WaMessage.wa_number_id == wn.id,
+            WaMessage.tenant_id == tenant_id,
+            WaMessage.direction == "out",
+            WaMessage.created_at >= df_dt,
+            WaMessage.created_at <= dt_dt,
+        )
+        .scalar()
+        or 0
+    )
+    convs_total = (
+        db.query(func.count(WaConversation.id))
+        .filter(
+            WaConversation.wa_number_id == wn.id,
+            WaConversation.tenant_id == tenant_id,
+            WaConversation.created_at >= df_dt,
+            WaConversation.created_at <= dt_dt,
+        )
+        .scalar()
+        or 0
+    )
+    convs_active = (
+        db.query(func.count(WaConversation.id))
+        .filter(
+            WaConversation.wa_number_id == wn.id,
+            WaConversation.tenant_id == tenant_id,
+            WaConversation.status != "closed",
+            WaConversation.created_at >= df_dt,
+            WaConversation.created_at <= dt_dt,
+        )
+        .scalar()
+        or 0
+    )
+
+    # Top 5 contactos por mensajes entrantes en el período.
+    top_rows = (
+        db.query(WaMessage.wa_conversation_id, func.count(WaMessage.id).label("cnt"))
+        .filter(
+            WaMessage.wa_number_id == wn.id,
+            WaMessage.tenant_id == tenant_id,
+            WaMessage.direction == "in",
+            WaMessage.created_at >= df_dt,
+            WaMessage.created_at <= dt_dt,
+        )
+        .group_by(WaMessage.wa_conversation_id)
+        .order_by(func.count(WaMessage.id).desc())
+        .limit(5)
+        .all()
+    )
+    conv_ids = [r[0] for r in top_rows]
+    conv_phone_map = {}
+    if conv_ids:
+        convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.id.in_(conv_ids),
+                WaConversation.tenant_id == tenant_id,
+            )
+            .all()
+        )
+        conv_phone_map = {c.id: c.wa_contact_phone for c in convs}
+
+    top_contacts = [
+        TopContactEntry(phone=conv_phone_map.get(r[0], ""), count=r[1])
+        for r in top_rows
+        if conv_phone_map.get(r[0])
+    ]
+
+    return WaNumberMetricsOut(
+        wa_number_id=wn.id,
+        date_from=df,
+        date_to=dt,
+        messages_in=msgs_in,
+        messages_out=msgs_out,
+        conversations_total=convs_total,
+        conversations_active=convs_active,
+        top_contacts=top_contacts,
     )
 
 

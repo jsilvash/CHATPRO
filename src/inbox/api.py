@@ -11,10 +11,12 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import column, func
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Session
 
 from src.agent.models import ToolInvocation
@@ -53,6 +55,7 @@ class ConversationSummary(BaseModel):
     assigned_user_id: uuid.UUID | None = None
     last_message_at: datetime | None
     turn_count: int
+    ai_summary: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -103,6 +106,26 @@ class ReplyResponse(BaseModel):
     success: bool
 
 
+class SearchMessageOut(BaseModel):
+    id: uuid.UUID
+    wa_conversation_id: uuid.UUID
+    direction: str
+    text: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SearchResultItem(BaseModel):
+    message: SearchMessageOut
+    context: list[SearchMessageOut]
+
+
+class SearchResponse(BaseModel):
+    total: int
+    results: list[SearchResultItem]
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -148,6 +171,107 @@ def _get_open_handoff(
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
+
+
+@router.get("/search", response_model=SearchResponse)
+def search_messages(
+    q: str | None = Query(None, description="Texto a buscar (obligatorio)"),
+    conversation_id: uuid.UUID | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SearchResponse:
+    """Búsqueda full-text de mensajes en el inbox del tenant.
+
+    Devuelve mensajes que hacen match con ``q`` más ±2 mensajes de contexto.
+    """
+    if not q or not q.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El parámetro 'q' es obligatorio y no puede estar vacío.",
+        )
+
+    tenant_id = get_current_tenant_id()
+
+    # Referencia a la columna generada body_tsv (GIN index, no en ORM).
+    body_tsv_col = column("body_tsv", TSVECTOR)
+    tsq = func.plainto_tsquery("spanish", q)
+
+    with bypass_tenant_filter():
+        base_q = db.query(WaMessage).filter(
+            WaMessage.tenant_id == tenant_id,
+            body_tsv_col.op("@@")(tsq),
+        )
+
+        if conversation_id is not None:
+            # Verificar que la conversación pertenece al tenant.
+            conv_check = (
+                db.query(WaConversation)
+                .filter(
+                    WaConversation.id == conversation_id,
+                    WaConversation.tenant_id == tenant_id,
+                )
+                .first()
+            )
+            if conv_check is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversación no encontrada.",
+                )
+            base_q = base_q.filter(WaMessage.wa_conversation_id == conversation_id)
+
+        if date_from is not None:
+            from datetime import timezone
+            df_dt = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+            base_q = base_q.filter(WaMessage.created_at >= df_dt)
+
+        if date_to is not None:
+            from datetime import timezone
+            dt_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
+            base_q = base_q.filter(WaMessage.created_at <= dt_dt)
+
+        total = base_q.count()
+        matched = (
+            base_q.order_by(WaMessage.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        results: list[SearchResultItem] = []
+        for msg in matched:
+            before = (
+                db.query(WaMessage)
+                .filter(
+                    WaMessage.wa_conversation_id == msg.wa_conversation_id,
+                    WaMessage.tenant_id == tenant_id,
+                    WaMessage.created_at < msg.created_at,
+                )
+                .order_by(WaMessage.created_at.desc())
+                .limit(2)
+                .all()
+            )
+            after = (
+                db.query(WaMessage)
+                .filter(
+                    WaMessage.wa_conversation_id == msg.wa_conversation_id,
+                    WaMessage.tenant_id == tenant_id,
+                    WaMessage.created_at > msg.created_at,
+                )
+                .order_by(WaMessage.created_at.asc())
+                .limit(2)
+                .all()
+            )
+            context = sorted(list(reversed(before)) + after, key=lambda m: m.created_at)
+            results.append(
+                SearchResultItem(
+                    message=SearchMessageOut.model_validate(msg),
+                    context=[SearchMessageOut.model_validate(c) for c in context],
+                )
+            )
+
+    return SearchResponse(total=total, results=results)
 
 
 @router.get("", response_model=ConversationListResponse)
@@ -281,6 +405,26 @@ def take_conversation(
 
     db.commit()
     db.refresh(conv)
+
+    # Webhook saliente conversation.status_changed (Fase 24A) — fire-and-forget.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        _emit(
+            tenant_id,
+            "conversation.status_changed",
+            {
+                "conversation_id": str(conv.id),
+                "tenant_id": str(tenant_id),
+                "new_status": conv.status,
+                "wa_contact_phone": conv.wa_contact_phone,
+                "assigned_user_id": str(current_user.id),
+            },
+            db,
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return conv
 
 
@@ -398,6 +542,26 @@ def reply_conversation(
     except Exception:
         pass
 
+    # Webhook saliente message.sent (Fase 24A) — fire-and-forget.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        _emit(
+            tenant_id,
+            "message.sent",
+            {
+                "conversation_id": str(conv.id),
+                "tenant_id": str(tenant_id),
+                "message_id": str(msg.id),
+                "wa_contact_phone": conv.wa_contact_phone,
+                "text": body.text,
+                "source": "agent",
+            },
+            db,
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return ReplyResponse(
         message_id=msg.id,
         wa_message_id=result.wa_message_id,
@@ -431,4 +595,32 @@ def close_conversation(
 
     db.commit()
     db.refresh(conv)
+
+    # Webhook saliente conversation.status_changed (Fase 24A) — fire-and-forget.
+    try:
+        from src.public_api.dispatcher import emit_event as _emit
+        _emit(
+            tenant_id,
+            "conversation.status_changed",
+            {
+                "conversation_id": str(conv.id),
+                "tenant_id": str(tenant_id),
+                "new_status": conv.status,
+                "wa_contact_phone": conv.wa_contact_phone,
+            },
+            db,
+        )
+        db.commit()
+    except Exception:
+        pass
+
+    # Tarea de resumen automático si > 5 turnos (Fase 24D) — no bloquea.
+    try:
+        from src.agent.tasks import summarize_on_close as _summarize
+        turn_count = conv.turn_count or 0
+        if turn_count > 5:
+            _summarize.delay(str(conv.id))
+    except Exception:
+        pass
+
     return conv
