@@ -17,6 +17,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from src.billing.quota import check_quota
 from src.db.session import get_db
 from src.public_api.models import ApiKey
 from src.tenancy.context import _tenant_id_var, bypass_tenant_filter
@@ -67,6 +68,8 @@ def get_api_key(scope: str = ""):
 
         key.last_used_at = datetime.now(timezone.utc)
         db.flush()
+
+        check_quota(key.tenant_id, "api_requests", 1, db)
 
         # Establecer tenant scope en el ContextVar del worker actual y en el
         # request state para que el endpoint (otro worker) pueda leerlo si

@@ -22,8 +22,10 @@ from sqlalchemy.orm import Session
 
 from src.agent.facts_extractor import load_top_facts
 from src.agent.llm import call_claude_messages
-from src.agent.models import Persona, UsageMetric
+from src.agent.models import Persona
 from src.agent.prompt_builder import build_system_prompt, is_within_business_hours
+from src.billing.models import UsageMetric
+from src.billing.quota import check_quota
 from src.agent.tool_runner import (
     DEFAULT_TOOL_TIMEOUT_S,
     collect_tools_for_conversation,
@@ -171,26 +173,26 @@ def _update_usage_metrics(
     today = date.today()
     tokens_in = metadata.get("input_tokens", 0)
     tokens_out = metadata.get("output_tokens", 0)
-    cost = float(metadata.get("cost_usd", 0.0))
+    cost_usd = float(metadata.get("cost_usd", 0.0))
+    cost_cents = round(cost_usd * 100, 4)
 
     stmt = pg_insert(UsageMetric).values(
-        id=uuid.uuid4(),
         tenant_id=tenant_id,
-        day=today,
-        msgs_in=msgs_in,
-        msgs_out=msgs_out,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cost_usd=cost,
+        metric_date=today,
+        messages_in=msgs_in,
+        messages_out=msgs_out,
+        llm_input_tokens=tokens_in,
+        llm_output_tokens=tokens_out,
+        llm_cost_cents=cost_cents,
     )
     stmt = stmt.on_conflict_do_update(
-        constraint="uq_usage_metrics_tenant_day",
+        index_elements=["tenant_id", "metric_date"],
         set_={
-            "msgs_in": UsageMetric.msgs_in + stmt.excluded.msgs_in,
-            "msgs_out": UsageMetric.msgs_out + stmt.excluded.msgs_out,
-            "tokens_in": UsageMetric.tokens_in + stmt.excluded.tokens_in,
-            "tokens_out": UsageMetric.tokens_out + stmt.excluded.tokens_out,
-            "cost_usd": UsageMetric.cost_usd + stmt.excluded.cost_usd,
+            "messages_in": UsageMetric.messages_in + stmt.excluded.messages_in,
+            "messages_out": UsageMetric.messages_out + stmt.excluded.messages_out,
+            "llm_input_tokens": UsageMetric.llm_input_tokens + stmt.excluded.llm_input_tokens,
+            "llm_output_tokens": UsageMetric.llm_output_tokens + stmt.excluded.llm_output_tokens,
+            "llm_cost_cents": UsageMetric.llm_cost_cents + stmt.excluded.llm_cost_cents,
         },
     )
     db.execute(stmt)
@@ -412,6 +414,15 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
         )
         system_prompt = build_system_prompt(persona, contact_facts=contact_facts)
         messages = _build_messages(db, conversation, inbound_msg)
+
+        # Verificar cuota de costo LLM antes de la llamada (1 cent mínimo estimado).
+        try:
+            check_quota(conversation.tenant_id, "llm_cost_cents", 1.0, db)
+        except Exception as exc:
+            from fastapi import HTTPException
+            if isinstance(exc, HTTPException) and exc.status_code == 429:
+                raise
+            logger.warning("check_quota LLM falló inesperadamente: %s", exc)
 
         t0 = time.perf_counter()
         response_text, metadata, end_reason = _run_agent_loop(

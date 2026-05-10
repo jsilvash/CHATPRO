@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from src.agent import api as agent_api
 from src.api.v1 import auth, me, tenants, users
+from src.billing import api as billing_api
 from src.connectors import api as connectors_api
 from src.contacts import api as contacts_api
 from src.inbox import api as inbox_api
@@ -24,3 +25,4 @@ router.include_router(inbox_api.router)
 router.include_router(knowledge_api.router)
 router.include_router(api_keys_api.router)
 router.include_router(webhooks_api.router)
+router.include_router(billing_api.router)
