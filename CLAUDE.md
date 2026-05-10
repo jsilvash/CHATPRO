@@ -12,7 +12,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 - **Backend:** Python 3.12 + FastAPI + SQLAlchemy 2.0 (sync) + Alembic
 - **BD:** PostgreSQL 16 + pgvector (Fase 5+)
 - **Cache / Colas:** Redis 7 + Celery 5
-- **Frontend:** Next.js 15 + TypeScript (Fase 8+)
+- **Frontend:** Next.js 16 + TypeScript + shadcn/ui + TanStack Query v5 + Zustand (Fase F2+)
 - **IA:** Anthropic Claude (Sonnet/Haiku según costo)
 - **WhatsApp:** WAHA Plus (ÚNICO transporte — sin Cloud API, sin Evolution, sin templates Meta)
 
@@ -44,8 +44,9 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
 | 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
 | 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ Mergeada a main |
-| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main (PR #24) |
-| 29 | Office hours + waiting time + menciones notas + métricas agente | ✅ PR abierto |
+| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ PR abierto |
+| F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
+| F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -247,10 +248,54 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Deactivate user endpoint | `PATCH /v1/users/{user_id}/deactivate` en `src/api/v1/users.py`, declarado ANTES de `GET /{user_id}`. Solo admin/owner. 422 si autodesactivación. Reasigna convs activas vía `_find_agent_with_least_load()` (ya en service.py). Si no hay agentes → convs quedan `assigned_user_id=None`. Respuesta: `{deactivated_user_id, reassigned_conversations, new_assignee_id}`. | Fase 28 |
 | Export CSV inbox | `GET /v1/inbox/export` declarado ANTES de `/{conversation_id}` (mismo patrón que /bulk-*). Acepta mismos filtros que GET /v1/inbox. Sin paginación. Content-Type text/csv. Columnas: id, wa_contact_name, wa_contact_phone, status, assigned_user_id, created_at, last_message_at, resolved_at, tags, notes_count. Tags separadas por `\|`. | Fase 28 |
 | Búsqueda contactos | `GET /v1/contacts/search?q=&limit=` declarado ANTES de `/{contact_id}` en `src/contacts/api.py`. ILIKE en `phone_e164 OR display_name`. `conversations_count` calculado via COUNT en `WaConversation.contact_id`. Schema `ContactSearchOut`. Aislamiento por `current_user.tenant_id`. | Fase 28 |
-| Office hours | Módulo `src/office_hours/` (models.py + service.py + api.py). Tabla `office_hours` (migración 0026): tenant_id, wa_number_id FK nullable, day_of_week (0=lunes), hour_start, hour_end, is_active, out_of_hours_message. Registros específicos del número tienen prioridad sobre globales (wa_number_id=None). Sin registros activos → bot siempre atiende. `check_office_hours()` usa `list(db.query(...).all())` para compatibilidad con MagicMock en tests. Inyectado al inicio de `agent/service.respond()`. CRUD en `/v1/office-hours`. | Fase 29 |
-| Waiting since en conversaciones | `WaConversation.waiting_since` (DateTime nullable, migración 0027). Se setea en `_auto_escalate_if_needed()` al pasar a waiting_agent; se limpia en `take_conversation()` y `reply_conversation()` al pasar a agent. `ConversationSummary.waiting_minutes: int | None` calculado en `_conv_summary()`. `GET /v1/inbox?sort=waiting_time` ordena por `waiting_since ASC NULLS LAST`. `GET /v1/inbox/overdue?threshold_minutes=30` declarado ANTES de `/{conversation_id}`. | Fase 29 |
-| Menciones en notas (@usuario) | Migración 0028 agrega `mentions JSONB default '[]'` a `conversation_notes`. `_MENTION_PATTERN = re.compile(r"@([\w.+-]+(?:@[\w.-]+)?)")` en `inbox/api.py`. `_resolve_mentions(text, tenant_id, db)` retorna `list[uuid.UUID]` buscando por email exacto o full_name case-insensitive (solo usuarios activos del tenant). Persiste como lista de strings UUID en JSONB. Notifica via `notification_manager.broadcast_from_sync(tenant_id, {event: "note.mention", ...})`. `NoteOut.mentions: list[uuid.UUID]`. | Fase 29 |
-| Métricas de agente por período | `GET /v1/users/{user_id}/metrics?date_from=&date_to=` declarado ANTES de `/{user_id}` GET. Accesible por admin/owner O el propio usuario; 403 si agente ve a otro agente; 404 si user_id no pertenece al tenant. Calcula: `conversations_handled` (resolved_at en período), `avg_first_response_sec`, `avg_resolution_sec` (ambos en segundos float nullable), `messages_sent` (direction=out), `notes_created`, `busiest_hour` (hora 0-23 con más msgs enviados, nullable). Schema `AgentMetricsOut` en `src/api/v1/users.py`. | Fase 29 |
+| Frontend stack | Next.js 16.2.x + TypeScript + Tailwind v4 + shadcn/ui (manual) + TanStack Query v5 + Zustand + jose. Directorio `frontend/` en raíz del repo. | Fase F2 |
+| Auth frontend | Cookies httpOnly `chatpro_access` + `chatpro_refresh`. Next.js API Routes hacen proxy al backend. `proxy.ts` (guard de rutas, v16 renombró `middleware.ts`→`proxy.ts`). `cookies()` es async en v16. | Fase F2 |
+| WS frontend | `useConversationSocket(convId)`: WebSocket a `/ws/inbox/{convId}?token=<jwt>`. Token obtenido de `/api/auth/ws-token` (Next.js API route que lee cookie httpOnly). Auto-reconexión tras 3s. | Fase F2 |
+| Notificaciones WS | `useNotifications()`: WebSocket a `/ws/notifications/{tenant_id}?token=`. Decodifica tenant_id del JWT en cliente con `decodeJwt(jose)`. Badge de `waiting_agent` en nav. | Fase F2 |
+| Inbox frontend | InboxList (filtros status/search/tags + paginación), ConversationCard, ConversationView (mensajes + acciones take/close/reply + panel tags+notas). `params` en pages son `Promise<{...}>` en Next.js 16 — deben ser awaited. | Fase F2 |
+
+---
+
+## Prompt de arranque — Fase F3 (siguiente prioridad frontend)
+
+```
+Retomo Fase F3 — Frontend: Dashboard operativo + gestión de agentes + conectores.
+Contexto:
+- Fase F2 (login + inbox list + inbox detalle + WebSocket) completada. PR abierto en rama claude/fase-f2-frontend-login-inbox-dN6dY.
+- Rama nueva: git checkout -b claude/fase-f3-frontend-dashboard origin/main
+- Main contiene backend Fases 0-28. Frontend en frontend/ con Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F2" y este prompt). Nada más.
+
+Estado tras Fase F2 (ya en rama):
+  A. Scaffold Next.js 16 en frontend/
+  B. Auth: cookies httpOnly (chatpro_access + chatpro_refresh), API Routes proxy
+  C. proxy.ts guard (middleware renombrado en Next.js v16)
+  D. Inbox: lista (filtros status/search/tags) + detalle (mensajes + take/close/reply + tags + notas)
+  E. WebSocket en tiempo real con useConversationSocket
+  F. Notificaciones WS con useNotifications (badge waiting_agent en nav)
+
+Opciones a implementar en Fase F3 (en orden A → B → C → D):
+  A. Dashboard operativo:
+     - Consumir GET /v1/metrics/dashboard
+     - Widgets: conversations_total/active/bot/closed_today, messages_in/out_today, agents_online, unassigned_waiting
+     - Actualización automática cada 30s (o SSE de /v1/metrics/stream)
+  B. Gestión de usuarios/agentes:
+     - Listar usuarios (GET /v1/users)
+     - Ver stats por usuario (GET /v1/users/{id}/stats)
+     - Deactivate con confirmación (PATCH /v1/users/{id}/deactivate)
+     - Ver agentes disponibles (GET /v1/users/available-agents)
+  C. Panel de contactos:
+     - Búsqueda (GET /v1/contacts/search)
+     - Detalle con historial de conversaciones
+  D. Panel de SLA:
+     - Consumir GET /v1/inbox/sla-report
+     - Mostrar avg/p50/p90 de primera respuesta y resolución
+
+Reglas:
+- NO tocar src/ Python
+- Arrancar dev server y probar manualmente antes de reportar listo
+- Commit + push + actualizar CLAUDE.md + generar prompt F4
+```
 
 ---
 
