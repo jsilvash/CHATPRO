@@ -230,12 +230,42 @@ Contexto:
         * test_connector_api_v19.py (27 fallos): fixture tenant_a no desempacada correctamente.
         * test_agent_tools.py::test_collect_incluye_builtin: WaConversation no tiene contact_id.
 
-- Opciones para Fase 22 (decidir con usuario según WHATSAPP_HUB_PLAN.md §12):
-    A. Memoria de contacto enriquecida: inyección de contact_facts en system prompt
-       (ya existe la extracción en Fase 4, pero la inyección en el prompt es básica).
-    B. Soporte multi-número: un tenant con N números de WhatsApp, cada uno con su persona.
-    C. Rate limiting por tenant/contacto: sliding window Redis, throttle envío saliente.
-    D. Otro ítem del backlog según prioridad del usuario.
+- Implementar las 4 opciones en esta sesión, en orden A → B → C → D:
+
+    A. Fix fallos pre-existentes (2 bugs independientes):
+       1. tests/test_connector_api_v19.py (27 fallos): el fixture `tenant_a` devuelve una
+          tupla (tenant, token) pero los tests lo usan como si fuera solo el tenant.
+          Solución: actualizar el fixture o los tests para desempacar correctamente.
+       2. tests/test_agent_tools.py::test_collect_incluye_builtin (1 fallo):
+          `WaConversation` no tiene columna `contact_id`.
+          Solución: añadir `contact_id = Column(UUID, nullable=True, index=True)` al modelo
+          WaConversation en src/models/wa_conversation.py y crear migración Alembic 0016.
+
+    B. Rate limiting por tenant/contacto:
+       - Sliding window in-memory (collections.deque) con fallback Redis si REDIS_URL configurado.
+       - Clave: (tenant_id, wa_contact_phone). Límites configurables en Settings:
+           RATE_LIMIT_MESSAGES: int = 10
+           RATE_LIMIT_WINDOW_SECONDS: int = 60
+       - Si se supera el límite, respond_to_message() retorna silenciosamente sin llamar al agente
+         (no envía respuesta al contacto, loggea WARNING con tenant_id + phone + count).
+       - Implementar en src/agent/rate_limiter.py, inyectar en src/agent/service.py::respond_to_message().
+       - Tests en tests/test_fase22_ratelimit.py.
+
+    C. Endpoint de búsqueda semántica pública:
+       - GET /v1/connector-configs/{id}/search?q=<query>&max_results=5
+       - Llamar connector.search(query, max_results) (ya existe en ambos connectors).
+       - Requiere autenticación (current_user), filtra por tenant_id igual que /stats.
+       - Responder con lista de productos: id, external_id, name, price, url, score (si disponible).
+       - Añadir schema SearchResultOut y SearchResultsOut en src/connectors/api.py.
+       - Tests en tests/test_fase22_search.py.
+
+    D. Persistir hallucination_flag en wa_messages:
+       - Añadir columna `hallucination_flag = Column(Boolean, default=False)` a WaMessage
+         en src/models/wa_message.py y crear migración Alembic 0017.
+       - En src/agent/service.py::respond_to_message(): tras llamar run_agent_turn(),
+         si result.hallucination_flag is True → setear hallucination_flag=True en el
+         WaMessage de salida antes del db.commit().
+       - Tests en tests/test_fase22_hallucination_flag.py.
 
 - NO tocar: src/knowledge/, src/billing/, src/inbox/ salvo indicación.
 - Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 23.
