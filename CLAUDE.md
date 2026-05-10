@@ -48,7 +48,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
 | F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
 | F3 | Frontend: Dashboard operativo + gestión usuarios + contactos + SLA | ✅ PR abierto |
-| F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ PR abierto |
+| F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ Mergeada a main |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
