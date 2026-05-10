@@ -7,6 +7,7 @@ Endpoints:
 - POST   /v1/inbox/bulk-assign                            — asignar múltiples convs (Fase 27B)
 - POST   /v1/inbox/bulk-tag                               — etiquetar múltiples convs (Fase 27B)
 - POST   /v1/inbox/bulk-close                             — cerrar múltiples convs (Fase 27B)
+- GET    /v1/inbox/export                                 — exportar CSV (Fase 28C)
 - GET    /v1/inbox/{conversation_id}                      — detalle (incluye notes_count)
 - POST   /v1/inbox/{conversation_id}/take                 — asignarse la conversación
 - POST   /v1/inbox/{conversation_id}/reply                — enviar mensaje como agente
@@ -741,6 +742,98 @@ def bulk_close(
 
     db.commit()
     return BulkActionResponse(updated=updated)
+
+
+# ── Export CSV (Fase 28C) — declarado ANTES de /{conversation_id} ────────────
+
+
+@router.get("/export")
+def export_inbox_csv(
+    status_filter: str | None = Query(None, alias="status"),
+    wa_number_id: uuid.UUID | None = Query(None),
+    tag: str | None = Query(None),
+    assigned_user_id: uuid.UUID | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    search: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Exporta las conversaciones del inbox en formato CSV.
+
+    Acepta los mismos filtros que GET /v1/inbox.
+    Devuelve todas las conversaciones (sin paginación).
+    """
+    import csv
+    import io
+
+    tenant_id = get_current_tenant_id()
+
+    with bypass_tenant_filter():
+        q = db.query(WaConversation).filter(WaConversation.tenant_id == tenant_id)
+
+        if status_filter:
+            q = q.filter(WaConversation.status == status_filter)
+        if wa_number_id:
+            q = q.filter(WaConversation.wa_number_id == wa_number_id)
+        if tag:
+            q = q.filter(
+                WaConversation.id.in_(
+                    db.query(ConversationTag.wa_conversation_id).filter(
+                        ConversationTag.tenant_id == tenant_id,
+                        ConversationTag.tag == tag,
+                    )
+                )
+            )
+        if assigned_user_id is not None:
+            q = q.filter(WaConversation.assigned_user_id == assigned_user_id)
+        if date_from is not None:
+            df_dt = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+            q = q.filter(WaConversation.created_at >= df_dt)
+        if date_to is not None:
+            dt_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
+            q = q.filter(WaConversation.created_at <= dt_dt)
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                WaConversation.wa_contact_name.ilike(like)
+                | WaConversation.wa_contact_phone.ilike(like)
+            )
+
+        convs = q.order_by(WaConversation.last_message_at.desc().nullslast()).all()
+
+    conv_ids = [c.id for c in convs]
+    tags_map = _load_tags(conv_ids, tenant_id, db)
+    notes_count_map = _load_notes_count(conv_ids, tenant_id, db)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "id", "wa_contact_name", "wa_contact_phone", "status",
+        "assigned_user_id", "created_at", "last_message_at",
+        "resolved_at", "tags", "notes_count",
+    ])
+
+    for conv in convs:
+        writer.writerow([
+            str(conv.id),
+            conv.wa_contact_name,
+            conv.wa_contact_phone,
+            conv.status,
+            str(conv.assigned_user_id) if conv.assigned_user_id else "",
+            conv.created_at.isoformat() if conv.created_at else "",
+            conv.last_message_at.isoformat() if conv.last_message_at else "",
+            conv.resolved_at.isoformat() if conv.resolved_at else "",
+            "|".join(sorted(tags_map.get(conv.id, []))),
+            notes_count_map.get(conv.id, 0),
+        ])
+
+    csv_content = output.getvalue()
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=inbox_export.csv"},
+    )
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
