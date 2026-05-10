@@ -1,9 +1,11 @@
 """Modelos del inbox humano.
 
 Tablas:
-- ``handoff_events``    — escalamientos a agente humano (Fase 8).
-- ``conversation_tags`` — etiquetas por conversación (Fase 25B).
-- ``canned_responses``  — templates de respuesta rápida (Fase 25C).
+- ``handoff_events``             — escalamientos a agente humano (Fase 8).
+- ``conversation_tags``          — etiquetas por conversación (Fase 25B).
+- ``canned_responses``           — templates de respuesta rápida (Fase 25C).
+- ``conversation_notes``         — notas internas por conversación (Fase 26B).
+- ``conversation_status_history``— historial de cambios de status (Fase 26C).
 """
 
 import uuid
@@ -153,5 +155,86 @@ class CannedResponse(Base):
             "tenant_id",
             "shortcode",
             name="uq_canned_responses_tenant_shortcode",
+        ),
+    )
+
+
+class ConversationNote(Base):
+    """Nota interna en una conversación, solo visible para el equipo (Fase 26B)."""
+
+    __tablename__ = "conversation_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wa_conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("wa_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    text: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_conversation_notes_tenant_conv",
+            "tenant_id",
+            "wa_conversation_id",
+        ),
+    )
+
+
+class ConversationStatusHistory(Base):
+    """Registro de cada cambio de status de una conversación (Fase 26C)."""
+
+    __tablename__ = "conversation_status_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wa_conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("wa_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    old_status: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    new_status: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    changed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    changed_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_conv_status_history_tenant_conv",
+            "tenant_id",
+            "wa_conversation_id",
         ),
     )

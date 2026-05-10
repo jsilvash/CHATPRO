@@ -442,10 +442,53 @@ def _stringify_for_anthropic(output: dict) -> str:
 _AUTO_ESCALATE_REASONS = frozenset({"max_tool_calls", "max_cost", "hard_limit"})
 
 
+def _find_agent_with_least_load(
+    db: Session,
+    tenant_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Devuelve el user_id del agente activo con menos conversaciones activas, o None."""
+    from sqlalchemy import func
+
+    from src.db.models import User
+
+    agents = (
+        db.query(User)
+        .filter(
+            User.tenant_id == tenant_id,
+            User.role.in_(["agent", "admin"]),
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+    if not agents:
+        return None
+
+    agent_ids = [a.id for a in agents]
+    conv_counts: dict[uuid.UUID, int] = dict(
+        db.query(
+            WaConversation.assigned_user_id,
+            func.count(WaConversation.id),
+        )
+        .filter(
+            WaConversation.tenant_id == tenant_id,
+            WaConversation.assigned_user_id.in_(agent_ids),
+            WaConversation.status.in_(["agent", "waiting_agent"]),
+        )
+        .group_by(WaConversation.assigned_user_id)
+        .all()
+    )
+    return min(agents, key=lambda a: conv_counts.get(a.id, 0)).id
+
+
 def _auto_escalate_if_needed(
     db: Session, conversation: WaConversation, end_reason: str
 ) -> None:
-    """Si el bot no pudo resolver, transiciona a waiting_agent y crea HandoffEvent."""
+    """Si el bot no pudo resolver, transiciona a waiting_agent y crea HandoffEvent.
+
+    Después de crear el HandoffEvent, intenta asignar automáticamente al agente
+    con menos conversaciones activas del tenant (round-robin por carga).
+    Si no hay agentes disponibles, deja la conversación sin asignar.
+    """
     if end_reason not in _AUTO_ESCALATE_REASONS:
         return
     if conversation.status != "bot":
@@ -465,7 +508,36 @@ def _auto_escalate_if_needed(
         opened_at=datetime.now(UTC),
     )
     db.add(evento)
+
+    # Historial de status (Fase 26C).
+    try:
+        from src.inbox.models import ConversationStatusHistory as _CSH
+        db.add(_CSH(
+            tenant_id=conversation.tenant_id,
+            wa_conversation_id=conversation.id,
+            old_status="bot",
+            new_status="waiting_agent",
+            changed_by_user_id=None,
+            changed_at=datetime.now(UTC),
+        ))
+    except Exception:
+        pass
+
     db.flush()
+
+    # Asignación automática round-robin (Fase 26A).
+    try:
+        from src.tenancy.context import bypass_tenant_filter
+        with bypass_tenant_filter():
+            agent_id = _find_agent_with_least_load(db, conversation.tenant_id)
+        if agent_id is not None:
+            conversation.assigned_user_id = agent_id
+            evento.agent_user_id = agent_id
+            db.add(conversation)
+            db.add(evento)
+            db.flush()
+    except Exception:
+        pass
 
     # Notificación in-app a agentes conectados (Fase 25D).
     try:
