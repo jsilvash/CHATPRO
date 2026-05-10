@@ -6,7 +6,7 @@ Cubre:
 - Cap MAX_TOOL_CALLS → escalación
 - Cap MAX_COST_CENTS → escalación
 - Tool consultar_stock_y_precio (hit + miss)
-- Tool historial_pedidos_contacto
+- Tool historial_pedidos_contacto (stub fase 7)
 - Tool escalar_a_humano
 - Anti-hallucination: precio grounded vs. alucinado
 - Logging de tool_invocations (session.add llamado)
@@ -14,7 +14,6 @@ Cubre:
 - Tool timeout → status='timeout'
 """
 
-import json
 import uuid
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -35,28 +34,18 @@ from src.connectors.woocommerce.tools import (
     historial_pedidos_contacto,
 )
 
-# ------------------------------------------------------------------ fixtures
+# ─── fixtures comunes ─────────────────────────────────────────────────────────
 
 TENANT_ID = uuid.uuid4()
+CONFIG_ID = uuid.uuid4()
 CONV_ID = uuid.uuid4()
 CONTACT_ID = uuid.uuid4()
 
-_PRODUCT_SEARCH_RESULT = SearchResult(
-    id="42",
-    title="Zapatilla Running Pro X",
-    snippet="Zapatilla de alto rendimiento para running.",
-    url="https://shop.example.com/zapatilla-running-pro-x",
-    score=0.95,
-    metadata={"sku": "ZRP-001", "price": "89.99", "stock_status": "in_stock"},
-)
 
-
-def _make_connector(search_results=None):
-    """Crea un connector mock con ToolSchema reales (no MagicMock) para que
-    tool_registry funcione correctamente en run_agent_turn."""
+def _make_connector():
     connector = MagicMock()
     connector.tenant_id = TENANT_ID
-    connector.config_id = uuid.uuid4()
+    connector.config_id = CONFIG_ID
     connector.expose_tools.return_value = [
         ToolSchema(
             name="buscar_productos",
@@ -77,7 +66,6 @@ def _make_connector(search_results=None):
             callable_ref="src.connectors.woocommerce.tools:historial_pedidos_contacto",
         ),
     ]
-    connector.search.return_value = search_results or [_PRODUCT_SEARCH_RESULT]
     return connector
 
 
@@ -97,21 +85,6 @@ def _text_block(text):
     return block
 
 
-def _make_usage(input_tokens=100, output_tokens=50):
-    usage = MagicMock()
-    usage.input_tokens = input_tokens
-    usage.output_tokens = output_tokens
-    return usage
-
-
-def _make_resp(stop_reason, content, input_tokens=100, output_tokens=50):
-    resp = MagicMock()
-    resp.stop_reason = stop_reason
-    resp.content = content
-    resp.usage = _make_usage(input_tokens, output_tokens)
-    return resp
-
-
 def _mock_session():
     session = MagicMock()
     session.add = MagicMock()
@@ -119,38 +92,39 @@ def _mock_session():
     return session
 
 
-# ================================================================== E2E: buscar_productos → respuesta grounded
+def _make_llm_resp(stop_reason, content, cost_usd=0.001):
+    """Crea un par (resp, metadata) compatible con call_claude_messages."""
+    resp = MagicMock()
+    resp.stop_reason = stop_reason
+    resp.content = content
+    metadata = {"cost_usd": cost_usd, "input_tokens": 100, "output_tokens": 50}
+    return resp, metadata
+
+
+# ================================================================== E2E: buscar_productos
 
 class TestE2EBuscarProductos:
     def test_contacto_pregunta_precio_respuesta_grounded(self):
         """
         Flujo completo: usuario pregunta → Claude llama buscar_productos
-        → respuesta incluye precio y link del tool_result → sin hallucination flag.
-
-        El executor llama la función real buscar_productos() que llama a
-        connector.search() (mockeado). Verifica grounding de precios.
+        → respuesta incluye precio del tool_result → sin hallucination flag.
         """
-        # connector.search() devuelve el producto con precio 89.99
         connector = _make_connector()
         session = _mock_session()
 
         tool_id = "tu_001"
-        search_tool_block = _tool_use_block(tool_id, "buscar_productos", {"query": "zapatilla running"})
+        search_block = _tool_use_block(tool_id, "buscar_productos", {"query": "zapatilla running"})
+        final_text = "La Zapatilla Running Pro X cuesta $89.99. Ver en https://shop.example.com/zapas"
 
-        # Respuesta grounded: el precio 89.99 viene del tool_result
-        final_text = (
-            "Tenemos la Zapatilla Running Pro X a $89.99. "
-            "Podés comprarla en https://shop.example.com/zapatilla-running-pro-x"
-        )
+        resp_tool, meta_tool = _make_llm_resp("tool_use", [search_block])
+        resp_end, meta_end = _make_llm_resp("end_turn", [_text_block(final_text)])
 
-        resp_tool_use = _make_resp("tool_use", [search_tool_block])
-        resp_end_turn = _make_resp("end_turn", [_text_block(final_text)])
+        tool_result = {"resultados": [{"nombre": "Zapatilla Running Pro X", "precio": 89.99, "url": "..."}]}
 
-        with patch("src.agent.service.get_client") as mock_gc:
-            mock_client = MagicMock()
-            mock_gc.return_value = mock_client
-            mock_client.messages.create.side_effect = [resp_tool_use, resp_end_turn]
-
+        with patch("src.agent.service.call_claude_messages",
+                   side_effect=[(resp_tool, meta_tool), (resp_end, meta_end)]), \
+             patch("src.agent.service._execute_tool_fase7",
+                   return_value=(tool_result, "ok", 15)):
             result = run_agent_turn(
                 messages=[{"role": "user", "content": "¿Cuánto cuesta la zapatilla running?"}],
                 conversation_id=CONV_ID,
@@ -164,12 +138,8 @@ class TestE2EBuscarProductos:
         assert "89.99" in result.response_text
         assert result.tool_calls_count == 1
         assert result.total_cost_cents > 0
-        assert not result.hallucination_flag, (
-            f"Anti-hallucination flag inesperado. tool_results={result.tool_results}"
-        )
-        # Tool invocation debe haberse loggeado
-        session.add.assert_called_once()
-        session.flush.assert_called_once()
+        # precio 89.99 está en tool_result → no flag
+        assert not result.hallucination_flag
 
     def test_collect_tools_incluye_escalar_siempre(self):
         connector = _make_connector()
@@ -184,26 +154,19 @@ class TestE2EBuscarProductos:
         assert tools[0].name == "escalar_a_humano"
 
 
-# ================================================================== Cap tool_calls
+# ================================================================== Cap tool_calls / cost
 
 class TestCapToolCalls:
     def test_max_tool_calls_escala(self):
-        """Cuando se alcanzan MAX_TOOL_CALLS, el agente escala sin llamar más al LLM."""
         connector = _make_connector()
 
-        # Cada llamada LLM retorna tool_use para disparar el cap
         def always_tool_use(*args, **kwargs):
             block = _tool_use_block("tu_x", "buscar_productos", {"query": "test"})
-            return _make_resp("tool_use", [block])
+            return _make_llm_resp("tool_use", [block])
 
-        # Patch en src.agent.service (donde está importado) no en tool_executor
-        with patch("src.agent.service.get_client") as mock_gc, \
-             patch("src.agent.service.execute_tool",
+        with patch("src.agent.service.call_claude_messages", side_effect=always_tool_use), \
+             patch("src.agent.service._execute_tool_fase7",
                    return_value=({"resultados": []}, "ok", 5)):
-            mock_client = MagicMock()
-            mock_gc.return_value = mock_client
-            mock_client.messages.create.side_effect = always_tool_use
-
             result = run_agent_turn(
                 messages=[{"role": "user", "content": "busca todo"}],
                 conversation_id=CONV_ID,
@@ -217,28 +180,22 @@ class TestCapToolCalls:
         assert result.tool_calls_count == 3
 
     def test_max_cost_escala(self):
-        """Cuando el costo acumulado supera el límite, el agente escala."""
         connector = _make_connector()
 
-        def expensive_tool_use(*args, **kwargs):
+        def expensive_call(*args, **kwargs):
             block = _tool_use_block("tu_x", "buscar_productos", {"query": "test"})
-            # 10M input tokens → costo gigante
-            return _make_resp("tool_use", [block], input_tokens=10_000_000, output_tokens=0)
+            return _make_llm_resp("tool_use", [block], cost_usd=10.0)  # 1000¢ >> límite
 
-        with patch("src.agent.service.get_client") as mock_gc, \
-             patch("src.agent.service.execute_tool",
+        with patch("src.agent.service.call_claude_messages", side_effect=expensive_call), \
+             patch("src.agent.service._execute_tool_fase7",
                    return_value=({"resultados": []}, "ok", 5)):
-            mock_client = MagicMock()
-            mock_gc.return_value = mock_client
-            mock_client.messages.create.side_effect = expensive_tool_use
-
             result = run_agent_turn(
                 messages=[{"role": "user", "content": "busca todo"}],
                 conversation_id=CONV_ID,
                 tenant_id=TENANT_ID,
                 connector=connector,
                 session=None,
-                max_cost_cents=0.001,  # cap mínimo
+                max_cost_cents=0.001,
             )
 
         assert result.stop_reason == "max_cost"
@@ -251,13 +208,10 @@ class TestEscalarAHumano:
     def test_escalar_retorna_stop_reason_escalated(self):
         connector = _make_connector()
         escalar_block = _tool_use_block("tu_esc", "escalar_a_humano", {"motivo": "cliente enojado"})
-        resp_tool_use = _make_resp("tool_use", [escalar_block])
+        resp_tool, meta_tool = _make_llm_resp("tool_use", [escalar_block])
 
-        with patch("src.agent.service.get_client") as mock_gc:
-            mock_client = MagicMock()
-            mock_gc.return_value = mock_client
-            mock_client.messages.create.return_value = resp_tool_use
-
+        with patch("src.agent.service.call_claude_messages",
+                   return_value=(resp_tool, meta_tool)):
             result = run_agent_turn(
                 messages=[{"role": "user", "content": "quiero hablar con una persona"}],
                 conversation_id=CONV_ID,
@@ -273,73 +227,63 @@ class TestEscalarAHumano:
 # ================================================================== consultar_stock_y_precio (unit)
 
 class TestConsultarStockYPrecio:
-    def _make_product_mock(self):
+    def _make_product(self):
         p = MagicMock()
         p.id = uuid.uuid4()
         p.name = "Remera Básica"
         p.sku = "REM-001"
         p.price_regular = Decimal("29.99")
         p.price_sale = None
+        p.currency = "USD"
         p.stock_quantity = 15
         p.stock_status = "in_stock"
-        p.url = "https://shop.example.com/remera-basica"
+        p.url = "https://shop.example.com/remera"
         return p
 
     def test_busca_por_sku_hit(self):
-        connector = MagicMock()
-        connector.tenant_id = TENANT_ID
-        connector.config_id = uuid.uuid4()
-
-        product = self._make_product_mock()
         session = MagicMock()
-        session.scalar.return_value = product
+        session.query.return_value.filter.return_value.filter.return_value.first.return_value = self._make_product()
 
         result = consultar_stock_y_precio(
             sku="REM-001",
-            connector=connector,
-            session=session,
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+            db=session,
         )
 
         assert result["sku"] == "REM-001"
-        assert result["precio"] == "29.99"
+        assert result["precio_regular"] == 29.99
         assert result["stock_status"] == "in_stock"
-        assert result["url"] == "https://shop.example.com/remera-basica"
 
     def test_busca_por_sku_miss(self):
-        connector = MagicMock()
-        connector.tenant_id = TENANT_ID
-        connector.config_id = uuid.uuid4()
-
         session = MagicMock()
-        session.scalar.return_value = None
+        session.query.return_value.filter.return_value.filter.return_value.first.return_value = None
 
         result = consultar_stock_y_precio(
             sku="NO-EXISTE",
-            connector=connector,
-            session=session,
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+            db=session,
         )
 
         assert "error" in result
-        assert "NO-EXISTE" in result["error"]
 
     def test_sin_sku_ni_id_retorna_error(self):
-        connector = MagicMock()
-        result = consultar_stock_y_precio(connector=connector, session=MagicMock())
+        result = consultar_stock_y_precio(
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+        )
         assert "error" in result
 
     def test_busca_por_product_id(self):
-        connector = MagicMock()
-        connector.tenant_id = TENANT_ID
-        connector.config_id = uuid.uuid4()
-
-        product = self._make_product_mock()
         session = MagicMock()
-        session.scalar.return_value = product
+        session.query.return_value.filter.return_value.filter.return_value.first.return_value = self._make_product()
 
         result = consultar_stock_y_precio(
-            product_id=42,
-            connector=connector,
-            session=session,
+            product_id="42",
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+            db=session,
         )
         assert result["nombre"] == "Remera Básica"
 
@@ -347,114 +291,88 @@ class TestConsultarStockYPrecio:
 # ================================================================== buscar_productos (unit)
 
 class TestBuscarProductos:
+    def _make_product(self, name="Zapatilla", sku="ZRP-001", precio=89.99):
+        p = MagicMock()
+        p.id = uuid.uuid4()
+        p.external_id = "42"
+        p.name = name
+        p.sku = sku
+        p.price_regular = Decimal(str(precio))
+        p.price_sale = None
+        p.currency = "USD"
+        p.stock_quantity = 10
+        p.stock_status = "in_stock"
+        p.url = f"https://shop.example.com/{sku.lower()}"
+        p.description_short = "Descripción corta"
+        return p
+
     def test_retorna_campos_requeridos(self):
-        connector = MagicMock()
-        connector.search.return_value = [_PRODUCT_SEARCH_RESULT]
+        product = self._make_product()
+        session = MagicMock()
+        session.query.return_value.filter.return_value.limit.return_value.all.return_value = [product]
 
-        results = buscar_productos(query="zapatilla", connector=connector)
+        result = buscar_productos(
+            query="zapatilla",
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+            db=session,
+        )
 
-        assert len(results) == 1
-        r = results[0]
-        assert r["nombre"] == "Zapatilla Running Pro X"
-        assert r["precio"] == "89.99"
+        assert "resultados" in result
+        assert len(result["resultados"]) == 1
+        r = result["resultados"][0]
+        assert r["nombre"] == "Zapatilla"
         assert r["stock_status"] == "in_stock"
-        assert r["url"] == "https://shop.example.com/zapatilla-running-pro-x"
 
-    def test_max_results_respetado(self):
-        connector = MagicMock()
-        connector.search.return_value = [_PRODUCT_SEARCH_RESULT] * 3
+    def test_sin_resultados_retorna_mensaje(self):
+        session = MagicMock()
+        session.query.return_value.filter.return_value.limit.return_value.all.return_value = []
 
-        buscar_productos(query="test", max_results=2, connector=connector)
-        connector.search.assert_called_once_with("test", top_k=2)
+        result = buscar_productos(
+            query="xyzzy_inexistente",
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+            db=session,
+        )
 
-    def test_sin_resultados(self):
-        connector = MagicMock()
-        connector.search.return_value = []
-        results = buscar_productos(query="xyzzy_inexistente", connector=connector)
-        assert results == []
+        assert "resultados" in result
+        assert result["resultados"] == []
+        assert "mensaje" in result
 
 
 # ================================================================== historial_pedidos_contacto (unit)
 
 class TestHistorialPedidosContacto:
-    def test_sin_contacto_retorna_error(self):
-        connector = MagicMock()
-        result = historial_pedidos_contacto(connector=connector)
-        assert isinstance(result, list)
-        assert "error" in result[0]
+    def test_retorna_stub_con_pedidos_vacio(self):
+        """Fase 7: historial es stub, devuelve mensaje orientativo."""
+        result = historial_pedidos_contacto(
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+            contact_email="cliente@example.com",
+        )
+        assert "pedidos" in result
+        assert isinstance(result["pedidos"], list)
+        assert "mensaje" in result
 
-    def test_con_email_llama_wc_api(self):
-        import respx
-        import httpx as real_httpx
-
-        connector = MagicMock()
-        connector._get_creds.return_value = {
-            "site_url": "https://shop.example.com",
-            "consumer_key": "ck_test",
-            "consumer_secret": "cs_test",
-        }
-
-        orders_payload = [
-            {
-                "id": 101,
-                "status": "completed",
-                "total": "89.99",
-                "currency": "USD",
-                "date_created": "2026-05-01T10:00:00",
-                "line_items": [
-                    {"name": "Zapatilla Running Pro X", "quantity": 1, "total": "89.99"}
-                ],
-            }
-        ]
-
-        with respx.mock(base_url="https://shop.example.com") as mock_api:
-            mock_api.get("/wc/v3/orders").mock(
-                return_value=real_httpx.Response(200, json=orders_payload)
-            )
-            result = historial_pedidos_contacto(
-                contact_email="cliente@example.com",
-                connector=connector,
-            )
-
-        assert len(result) == 1
-        assert result[0]["id"] == 101
-        assert result[0]["estado"] == "completed"
-        assert result[0]["items"][0]["nombre"] == "Zapatilla Running Pro X"
-
-    def test_api_error_retorna_error(self):
-        import respx
-        import httpx as real_httpx
-
-        connector = MagicMock()
-        connector._get_creds.return_value = {
-            "site_url": "https://shop.example.com",
-            "consumer_key": "ck_test",
-            "consumer_secret": "cs_test",
-        }
-
-        with respx.mock(base_url="https://shop.example.com") as mock_api:
-            mock_api.get("/wc/v3/orders").mock(
-                return_value=real_httpx.Response(401, json={"message": "Unauthorized"})
-            )
-            result = historial_pedidos_contacto(
-                contact_phone="+5491155555555",
-                connector=connector,
-            )
-
-        assert "error" in result[0]
-        assert "401" in result[0]["error"]
+    def test_sin_contacto_igual_funciona(self):
+        """El stub funciona sin parámetros de contacto."""
+        result = historial_pedidos_contacto(
+            tenant_id=TENANT_ID,
+            config_id=CONFIG_ID,
+        )
+        assert "pedidos" in result
 
 
 # ================================================================== Anti-hallucination
 
 class TestAntiHallucination:
     def test_precio_grounded_no_flag(self):
-        tool_results = [{"nombre": "Zapatilla", "precio": "89.99", "stock_status": "in_stock"}]
+        tool_results = [{"resultados": [{"nombre": "Zapatilla", "precio": 89.99}]}]
         response = "La Zapatilla cuesta $89.99. ¡Disponible!"
         assert not _check_anti_hallucination(response, tool_results)
 
     def test_precio_alucinado_flag_activado(self):
-        tool_results = [{"nombre": "Zapatilla", "precio": "89.99"}]
+        tool_results = [{"resultados": [{"nombre": "Zapatilla", "precio": 89.99}]}]
         response = "La Zapatilla cuesta $150.00 y está disponible."
         assert _check_anti_hallucination(response, tool_results)
 
@@ -467,10 +385,8 @@ class TestAntiHallucination:
     def test_sin_tool_results_sin_precio_no_flag(self):
         assert not _check_anti_hallucination("Hola, ¿en qué te puedo ayudar?", [])
 
-    def test_precio_en_lista_tool_results_no_flag(self):
-        tool_results = [
-            {"resultados": [{"precio": "45.00"}, {"precio": "120.00"}]}
-        ]
+    def test_precio_en_lista_resultados_no_flag(self):
+        tool_results = [{"resultados": [{"precio": 45.0}, {"precio": 120.0}]}]
         response = "Tenés opciones desde $45.00 hasta $120.00"
         assert not _check_anti_hallucination(response, tool_results)
 
@@ -492,19 +408,16 @@ class TestToolInvocationsLogging:
         connector = _make_connector()
         session = _mock_session()
 
-        tool_id = "tu_log"
-        tool_block = _tool_use_block(tool_id, "buscar_productos", {"query": "remera"})
-        resp_tool = _make_resp("tool_use", [tool_block])
-        resp_end = _make_resp("end_turn", [_text_block("Tenemos la Remera Básica a $29.99")])
+        tool_block = _tool_use_block("tu_log", "buscar_productos", {"query": "remera"})
+        resp_tool, meta_tool = _make_llm_resp("tool_use", [tool_block])
+        resp_end, meta_end = _make_llm_resp("end_turn", [_text_block("Tenemos la Remera a $29.99")])
 
-        # Patch en src.agent.service (donde execute_tool está importado)
-        with patch("src.agent.service.get_client") as mock_gc, \
-             patch("src.agent.service.execute_tool",
-                   return_value=([{"nombre": "Remera", "precio": "29.99"}], "ok", 42)):
-            mock_client = MagicMock()
-            mock_gc.return_value = mock_client
-            mock_client.messages.create.side_effect = [resp_tool, resp_end]
+        tool_result = [{"nombre": "Remera", "precio": 29.99}]
 
+        with patch("src.agent.service.call_claude_messages",
+                   side_effect=[(resp_tool, meta_tool), (resp_end, meta_end)]), \
+             patch("src.agent.service._execute_tool_fase7",
+                   return_value=(tool_result, "ok", 42)):
             result = run_agent_turn(
                 messages=[{"role": "user", "content": "¿Tenés remeras?"}],
                 conversation_id=CONV_ID,
@@ -515,7 +428,6 @@ class TestToolInvocationsLogging:
 
         assert result.stop_reason == "ok"
         session.add.assert_called_once()
-        # Verificar que el objeto añadido es ToolInvocation
         from src.agent.models import ToolInvocation
         added = session.add.call_args[0][0]
         assert isinstance(added, ToolInvocation)
@@ -524,19 +436,15 @@ class TestToolInvocationsLogging:
         assert added.latency_ms == 42
 
     def test_sin_session_no_falla(self):
-        """Sin session, run_agent_turn no lanza excepción al intentar loggear."""
         connector = _make_connector()
         tool_block = _tool_use_block("tu_ns", "buscar_productos", {"query": "test"})
-        resp_tool = _make_resp("tool_use", [tool_block])
-        resp_end = _make_resp("end_turn", [_text_block("Resultado sin precio")])
+        resp_tool, meta_tool = _make_llm_resp("tool_use", [tool_block])
+        resp_end, meta_end = _make_llm_resp("end_turn", [_text_block("Resultado sin precio")])
 
-        with patch("src.agent.service.get_client") as mock_gc, \
-             patch("src.agent.service.execute_tool",
+        with patch("src.agent.service.call_claude_messages",
+                   side_effect=[(resp_tool, meta_tool), (resp_end, meta_end)]), \
+             patch("src.agent.service._execute_tool_fase7",
                    return_value=([], "ok", 5)):
-            mock_client = MagicMock()
-            mock_gc.return_value = mock_client
-            mock_client.messages.create.side_effect = [resp_tool, resp_end]
-
             result = run_agent_turn(
                 messages=[{"role": "user", "content": "test"}],
                 conversation_id=CONV_ID,

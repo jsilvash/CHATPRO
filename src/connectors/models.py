@@ -1,89 +1,135 @@
+"""Modelos SQLAlchemy para conectores y catálogo de productos (Fase 5).
+
+Tablas:
+- ``connector_defs``    — definición de cada tipo de conector (woocommerce, shopify…).
+- ``connector_configs`` — instancia de un conector configurada por un tenant.
+- ``products``          — catálogo sincronizado desde el proveedor.
+"""
+
 import uuid
-from datetime import datetime
 
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import (
-    TIMESTAMP,
-    BigInteger,
-    Column,
-    ForeignKey,
-    Index,
-    Integer,
-    Numeric,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.dialects.postgresql import BYTEA, JSONB
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import DeclarativeBase
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.db.base import Base, TimestampMixin
 
 
-class Base(DeclarativeBase):
-    pass
+class ConnectorDef(Base):
+    """Definición global de un tipo de conector (no multi-tenant).
+
+    Registra qué conectores existen en el sistema y si están habilitados.
+    Se puebla al arranque desde el registro de código (src/connectors/registry.py).
+    """
+
+    __tablename__ = "connector_defs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(sa.Text, nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    version: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, server_default="true")
 
 
-class ConnectorConfig(Base):
+class ConnectorConfig(Base, TimestampMixin):
+    """Instancia de un conector configurada por un tenant.
+
+    ``encrypted_credentials`` contiene el blob AES-GCM generado por
+    ``src/connectors/crypto.encrypt_credentials``.
+    """
+
     __tablename__ = "connector_configs"
 
-    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(PGUUID(as_uuid=True), nullable=False)
-    connector_id = Column(PGUUID(as_uuid=True), nullable=False)
-    display_name = Column(Text, nullable=False)
-    encrypted_credentials = Column(BYTEA, nullable=False)
-    webhook_secret = Column(Text, nullable=False)
-    status = Column(Text, nullable=False, default="pending")
-    last_full_sync_at = Column(TIMESTAMP(timezone=True))
-    last_incremental_sync_at = Column(TIMESTAMP(timezone=True))
-    last_error = Column(Text)
-    config = Column(JSONB, nullable=False, default=dict)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index("ix_connector_configs_tenant", "tenant_id"),
-        Index("ix_connector_configs_tenant_connector", "tenant_id", "connector_id"),
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-
-
-class Product(Base):
-    __tablename__ = "products"
-
-    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(PGUUID(as_uuid=True), nullable=False)
-    connector_config_id = Column(
-        PGUUID(as_uuid=True),
-        ForeignKey("connector_configs.id", ondelete="CASCADE"),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    connector_def_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("connector_defs.id"),
         nullable=False,
     )
-    external_id = Column(Text, nullable=False)
-    sku = Column(Text)
-    name = Column(Text, nullable=False)
-    description_short = Column(Text)
-    description_long = Column(Text)
-    price_regular = Column(Numeric(12, 2))
-    price_sale = Column(Numeric(12, 2))
-    currency = Column(Text)
-    stock_quantity = Column(Integer)
-    stock_status = Column(Text)
-    url = Column(Text)
-    images = Column(JSONB)
-    categories = Column(JSONB)
-    attributes = Column(JSONB)
-    variations = Column(JSONB)
-    raw = Column(JSONB)
-    # Fase 6: columna de embedding via pgvector (migración 0012)
-    embedding = Column(Vector(1024), nullable=True)
-    deleted_at = Column(TIMESTAMP(timezone=True))
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    display_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    encrypted_credentials: Mapped[bytes | None] = mapped_column(sa.LargeBinary, nullable=True)
+    webhook_secret: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="")
+    # 'pending' | 'connected' | 'error' | 'disabled'
+    status: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="pending")
+    last_full_sync_at: Mapped[sa.DateTime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    last_incremental_sync_at: Mapped[sa.DateTime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "connector_config_id", "external_id"),
-        Index(
-            "ix_products_tenant_sku",
-            "tenant_id",
-            "sku",
-            postgresql_where="sku IS NOT NULL",
+        sa.Index("ix_connector_configs_tenant", "tenant_id"),
+        sa.Index("ix_connector_configs_tenant_def", "tenant_id", "connector_def_id"),
+    )
+
+
+class Product(Base, TimestampMixin):
+    """Producto sincronizado desde el proveedor e-commerce del tenant.
+
+    ``external_id`` es el ID en el sistema del proveedor (Woo product ID, etc.).
+    ``deleted_at`` implementa soft-delete: los productos borrados en el proveedor
+    se marcan aquí en lugar de eliminarse, para mantener coherencia con órdenes
+    ya referenciadas.
+    """
+
+    __tablename__ = "products"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    connector_config_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("connector_configs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    sku: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    description_short: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    description_long: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    price_regular: Mapped[float | None] = mapped_column(sa.Numeric(12, 2), nullable=True)
+    price_sale: Mapped[float | None] = mapped_column(sa.Numeric(12, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    stock_quantity: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    # 'in_stock' | 'out_of_stock' | 'on_backorder'
+    stock_status: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    images: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    categories: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    attributes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    variations: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    deleted_at: Mapped[sa.DateTime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tenant_id", "connector_config_id", "external_id",
+            name="uq_products_tenant_config_external",
         ),
-        Index("ix_products_tenant_config", "tenant_id", "connector_config_id"),
+        sa.Index("ix_products_tenant_sku", "tenant_id", "sku",
+                 postgresql_where=sa.text("sku IS NOT NULL")),
+        sa.Index("ix_products_tenant_config", "tenant_id", "connector_config_id"),
     )

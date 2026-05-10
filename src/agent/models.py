@@ -1,93 +1,112 @@
-"""Modelos SQLAlchemy para Fase 7: agent tools + observabilidad."""
+"""Modelos del agente IA (Fase 2).
+
+Tablas:
+- ``personas``          — configuración de persona/locale/tono por tenant.
+- ``tool_invocations``  — registro de cada tool llamada por el agente.
+
+usage_metrics movido a src.billing.models (Fase 11).
+"""
 
 import uuid
-from datetime import datetime
 
-from sqlalchemy import (
-    TIMESTAMP,
-    Column,
-    ForeignKey,
-    Index,
-    Integer,
-    Numeric,
-    Text,
-)
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
-from src.connectors.models import Base
+from src.db.base import Base, TimestampMixin
 
 
-class WaConversation(Base):
-    """Stub mínimo — se amplía en Fase 8 (inbox + handoff)."""
+class Persona(Base, TimestampMixin):
+    """Configuración de personalidad del bot para un tenant."""
 
-    __tablename__ = "wa_conversations"
+    __tablename__ = "personas"
 
-    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(PGUUID(as_uuid=True), nullable=False)
-    created_at = Column(
-        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-
-    __table_args__ = (Index("ix_wa_conversations_tenant", "tenant_id"),)
-
-
-class WaMessage(Base):
-    """Stub mínimo — se amplía en Fase 8."""
-
-    __tablename__ = "wa_messages"
-
-    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(PGUUID(as_uuid=True), nullable=False)
-    conversation_id = Column(
-        PGUUID(as_uuid=True),
-        ForeignKey("wa_conversations.id", ondelete="CASCADE"),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
-    created_at = Column(
-        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    system_prompt: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default=""
+    )
+    # Hint de tono (incluido en system prompt): "formal" | "amigable" | "neutral"
+    tone: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default="amigable"
+    )
+    # Locale BCP-47: "es-CL", "es-MX", "en-US"
+    locale: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default="es-CL"
+    )
+    # Zona horaria IANA: "America/Santiago"
+    timezone: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default="America/Santiago"
+    )
+    # Mensaje cuando la consulta llega fuera de horario comercial.
+    out_of_hours_message: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default=""
+    )
+    # Horario comercial. Formato:
+    # {"tz": "America/Santiago", "days": {"mon-fri": ["09:00", "18:00"]}}
+    # Si vacío ({}) → siempre disponible.
+    business_hours_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    # Modelo Claude a usar. Default: claude-sonnet-4-6
+    model_id: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, server_default="claude-sonnet-4-6"
     )
 
-    __table_args__ = (Index("ix_wa_messages_conv", "conversation_id"),)
 
+class ToolInvocation(Base, TimestampMixin):
+    """Registro de cada invocación de tool por el agente (Fase 7).
 
-class ToolInvocation(Base):
+    Sirve para debug, métricas y facturación. Se persiste antes de continuar
+    el loop, así que un crash a mitad de turno deja rastro.
+    """
+
     __tablename__ = "tool_invocations"
 
-    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(PGUUID(as_uuid=True), nullable=False)
-    conversation_id = Column(
-        PGUUID(as_uuid=True),
-        ForeignKey("wa_conversations.id", ondelete="CASCADE"),
-        nullable=False,
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    message_id = Column(
-        PGUUID(as_uuid=True),
-        ForeignKey("wa_messages.id"),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wa_conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("wa_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Mensaje inbound que originó este turno (puede ser NULL en escenarios edge).
+    wa_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("wa_messages.id", ondelete="SET NULL"),
         nullable=True,
     )
-    tool_name = Column(Text, nullable=False)
-    input_json = Column(JSONB, nullable=False)
-    output_json = Column(JSONB, nullable=True)
-    status = Column(Text, nullable=False)  # 'ok'|'error'|'timeout'
-    error = Column(Text, nullable=True)
-    latency_ms = Column(Integer, nullable=True)
-    cost_cents = Column(Numeric(8, 4), nullable=True)
-    created_at = Column(
-        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    tool_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    tool_use_id: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="")
+    input: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
     )
+    output: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+    )
+    # success | error | timeout | unknown_tool
+    status: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="success")
+    error: Mapped[str] = mapped_column(sa.Text, nullable=False, server_default="")
+    latency_ms: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
 
     __table_args__ = (
-        Index(
-            "ix_tool_invocations_tenant_conv",
-            "tenant_id",
-            "conversation_id",
-            "created_at",
-        ),
-        Index(
-            "ix_tool_invocations_tenant_tool",
-            "tenant_id",
-            "tool_name",
-            "created_at",
-        ),
+        sa.Index("ix_tool_invocations_tenant_conv", "tenant_id", "wa_conversation_id"),
     )
+
+

@@ -4,18 +4,22 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from src.connectors.models import Base
-
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
-
-# Permite sobreescribir la URL desde variable de entorno
-if db_url := os.getenv("DATABASE_URL"):
+# Permitir override via variable de entorno (útil en docker / CI)
+db_url = os.environ.get("DATABASE_URL")
+if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
+
+# Importar todos los modelos para que Alembic los detecte
+from src.db.base import Base  # noqa: E402
+import src.db.models  # noqa: E402, F401
+import src.wa.models  # noqa: E402, F401
+
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
