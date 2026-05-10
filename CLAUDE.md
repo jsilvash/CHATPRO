@@ -40,7 +40,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 21 | Webhooks salientes conector + panel métricas + anti-hallucination logging | ✅ Mergeada a main |
 | 22 | Fix pre-existentes + rate limit + search semántico + hallucination_flag | ✅ Mergeada a main |
 | 23 | WebSocket inbox + Export GDPR + i18n personas + métricas SSE | ✅ Mergeada a main |
-| 24 | Webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar | ✅ PR abierto |
+| 24 | Webhooks conversación + métricas WaNumber + búsqueda inbox + resumen al cerrar | ✅ Mergeada a main |
+| 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -226,6 +227,94 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Métricas WaNumber | `GET /v1/wa-numbers/{id}/metrics` con params `date_from`/`date_to` (default hoy-30d/hoy). COUNT sobre `wa_messages` y `wa_conversations` filtrados por `wa_number_id` + tenant. `top_contacts`: top 5 convs por mensajes entrantes, resuelto a phone via JOIN en Python. Schema `WaNumberMetricsOut` + `TopContactEntry` en `src/wa/api.py`. | Fase 24 |
 | Búsqueda full-text inbox | `GET /v1/inbox/search?q=` usa `body_tsv` GENERATED ALWAYS (migración 0020, GIN index). Columna referenciada via `column("body_tsv", TSVECTOR)` (no en ORM). `plainto_tsquery('spanish', q)`. Contexto ±2 por subqueries `created_at < msg` desc limit 2 + `created_at > msg` asc limit 2. 400 si q vacío o ausente. | Fase 24 |
 | Resumen al cerrar (Celery) | `src/agent/tasks.summarize_on_close(conv_id)` Celery task. Disparada en `close_conversation` si `conv.turn_count > 5`. Usa Claude Haiku (`claude-haiku-4-5-20251001`). Persiste en `WaConversation.ai_summary` (columna existente desde Fase 3). `ConversationSummary` y `ConversationDetail` exponen `ai_summary`. `src.agent` añadido al `autodiscover_tasks`. | Fase 24 |
+| SLA timestamps | `WaConversation.first_response_at` (DateTime nullable, migración 0021): se setea en `_persist_outbound()` (bot) y `reply_conversation()` (agente), solo si es NULL. `WaConversation.resolved_at`: se setea en `close_conversation()`. `GET /v1/inbox/sla-report?date_from=&date_to=` devuelve avg/p50/p90 de primera respuesta y resolución, filtrado por tenant + rango de fechas. | Fase 25 |
+| Tags en conversaciones | Tabla `conversation_tags` (migración 0022): tenant_id, wa_conversation_id FK, tag VARCHAR(64), created_by_user_id FK nullable, created_at. Unique (wa_conversation_id, tag). Tags normalizadas a minúsculas. `POST /v1/inbox/{conv_id}/tags` → 201/200 idempotente. `DELETE /v1/inbox/{conv_id}/tags/{tag}` → 204. `GET /v1/inbox?tag=xxx` filtra por subquery. `ConversationSummary.tags: list[str]` cargado via `_load_tags()` batch query. Aislamiento por tenant_id en toda query. | Fase 25 |
+| Canned responses | Tabla `canned_responses` (migración 0023): tenant_id, shortcode VARCHAR(64), text, created_by_user_id, timestamps. Unique (tenant_id, shortcode). CRUD completo en `src/inbox/canned_api.py` bajo `/v1/canned-responses`. PATCH actualiza `updated_at` manualmente. El mismo shortcode puede existir en tenants distintos. Router registrado en `src/api/v1/router.py`. | Fase 25 |
+| NotificationManager WS | `src/messaging/ws_manager.NotificationManager`: dict{tenant_id→set[WebSocket]}, misma arquitectura que `ConnectionManager`. Singleton `notification_manager`. `broadcast_from_sync()` usa `run_coroutine_threadsafe` igual que manager. Endpoint `/ws/notifications/{tenant_id}?token=<jwt>` en `ws_router.py`. Broadcast de `conversation.waiting_agent` en `_auto_escalate_if_needed()` (service.py). Schema: `{event, conversation_id, wa_contact_phone, tenant_id, timestamp ISO8601}`. | Fase 25 |
+
+---
+
+## Prompt de arranque — Fase 26 (siguiente prioridad del backlog)
+
+```
+Retomo Fase 26 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Contexto:
+- Fase 25 (SLA panel + tags conversaciones + canned responses + notificaciones WS) mergeada a main. PR #20.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase26-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-25 funcionales.
+- Primero: leer SOLO CLAUDE.md. Nada más.
+
+- Estado tras Fase 25:
+    A. SLA panel:
+       - WaConversation.first_response_at + resolved_at (migración 0021).
+       - first_response_at: seteado en _persist_outbound (bot) y reply_conversation (agente), solo si NULL.
+       - resolved_at: seteado en close_conversation.
+       - GET /v1/inbox/sla-report con avg/p50/p90 de primera respuesta y resolución.
+       - Tests en tests/test_fase25_sla.py (6 tests).
+    B. Tags en conversaciones:
+       - Tabla conversation_tags (migración 0022).
+       - POST /v1/inbox/{conv_id}/tags → 201/200 idempotente. Tags normalizadas a minúsculas.
+       - DELETE /v1/inbox/{conv_id}/tags/{tag} → 204 idempotente.
+       - GET /v1/inbox?tag=xxx filtra por etiqueta.
+       - GET /v1/inbox/{conv_id} incluye tags: list[str].
+       - Tests en tests/test_fase25_tags.py (8 tests).
+    C. Canned responses:
+       - Tabla canned_responses (migración 0023): tenant_id, shortcode unique, text.
+       - CRUD completo en /v1/canned-responses (POST 201, GET list paginado, GET/{id}, PATCH, DELETE).
+       - src/inbox/canned_api.py registrado en src/api/v1/router.py.
+       - Tests en tests/test_fase25_canned.py (12 tests).
+    D. Notificaciones WS:
+       - NotificationManager en src/messaging/ws_manager.py.
+       - Endpoint /ws/notifications/{tenant_id}?token=<jwt> en ws_router.py.
+       - Broadcast conversation.waiting_agent en _auto_escalate_if_needed (service.py).
+       - Tests en tests/test_fase25_notifications.py (8 tests).
+    - Migraciones 0021, 0022, 0023.
+    - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
+      (export_tenant_data importado localmente, no patcheable como attr de módulo — no es regresión).
+
+- Implementar las 4 opciones en esta sesión, en orden A → B → C → D:
+
+    A. Asignación automática de conversaciones (round-robin):
+       - Cuando una conversación pasa a waiting_agent (bot no pudo resolver),
+         asignar automáticamente al agente disponible con menos conversaciones activas del tenant.
+       - "Disponible" = usuario con role=agent o admin, is_active=True.
+       - Si no hay agentes disponibles → dejar sin asignar (status=waiting_agent sin assigned_user_id).
+       - Integrar en _auto_escalate_if_needed (service.py) después del HandoffEvent.
+       - Endpoint: GET /v1/users/available-agents → lista de agentes con carga actual (conv_count).
+       - Tests en tests/test_fase26_auto_assign.py.
+
+    B. Notas internas en conversaciones:
+       - Tabla conversation_notes: {id UUID PK, tenant_id UUID, wa_conversation_id UUID FK,
+         user_id UUID FK, text TEXT, created_at DateTime}.
+         Index (tenant_id, wa_conversation_id). Migración 0024.
+       - POST /v1/inbox/{conv_id}/notes body: {"text": "..."} → 201.
+       - GET /v1/inbox/{conv_id}/notes → lista de notas.
+       - DELETE /v1/inbox/{conv_id}/notes/{note_id} → 204 (solo el autor).
+       - GET /v1/inbox/{conv_id} incluye notes_count: int en la respuesta.
+       - Tests en tests/test_fase26_notes.py.
+
+    C. Historial de cambios de status en conversación:
+       - Tabla conversation_status_history: {id UUID PK, tenant_id UUID,
+         wa_conversation_id UUID FK, old_status TEXT, new_status TEXT,
+         changed_by_user_id UUID FK nullable, changed_at DateTime}.
+         Migración 0025.
+       - Registrar en: take_conversation, close_conversation, reply_conversation
+         (cuando promueve waiting_agent→agent), _auto_escalate_if_needed.
+       - GET /v1/inbox/{conv_id}/status-history → lista ordenada por changed_at.
+       - Tests en tests/test_fase26_status_history.py.
+
+    D. Plantillas de mensaje con variables:
+       - Extender canned_responses para soportar variables tipo {{nombre}}, {{producto}}.
+       - GET /v1/canned-responses/{id}/render?nombre=Juan&producto=Zapatillas
+         → devuelve text con variables reemplazadas.
+       - Validación al crear/actualizar: variables bien formadas (solo letras/guión bajo).
+       - Endpoint: GET /v1/canned-responses/search?q=<texto> para buscar por shortcode/text.
+       - Tests en tests/test_fase26_canned_templates.py.
+
+- NO tocar: src/knowledge/ salvo indicación.
+- Al cerrar: commit + push + PR + actualizar CLAUDE.md + generar prompt Fase 27.
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 

@@ -1,8 +1,13 @@
-"""Gestor de conexiones WebSocket para el inbox en tiempo real (Fase 23A).
+"""Gestor de conexiones WebSocket para el inbox en tiempo real.
 
-ConnectionManager mantiene un dict {conversation_id → set[WebSocket]}.
-El broadcast se puede disparar desde código async O desde código sync (service.py,
-inbox/api.py) usando el event loop registrado al arranque.
+- ConnectionManager  (Fase 23A): dict {conversation_id → set[WebSocket]}.
+  Broadcast de mensajes en conversaciones abiertas.
+
+- NotificationManager (Fase 25D): dict {tenant_id → set[WebSocket]}.
+  Broadcast de notificaciones de agentes (conversation.waiting_agent, etc.).
+
+Ambos managers pueden dispararse desde código async O sync usando el event
+loop registrado al arranque vía set_main_loop().
 """
 
 from __future__ import annotations
@@ -80,3 +85,60 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+class NotificationManager:
+    """Gestiona conexiones WebSocket de notificaciones agrupadas por tenant_id."""
+
+    def __init__(self) -> None:
+        self._connections: dict[uuid.UUID, set[WebSocket]] = {}
+
+    async def connect(self, tenant_id: uuid.UUID, ws: WebSocket) -> None:
+        await ws.accept()
+        self._connections.setdefault(tenant_id, set()).add(ws)
+        logger.debug(
+            "notif_manager: conectado tenant=%s total=%d",
+            tenant_id,
+            len(self._connections[tenant_id]),
+        )
+
+    def disconnect(self, tenant_id: uuid.UUID, ws: WebSocket) -> None:
+        sockets = self._connections.get(tenant_id)
+        if sockets:
+            sockets.discard(ws)
+            if not sockets:
+                del self._connections[tenant_id]
+        logger.debug("notif_manager: desconectado tenant=%s", tenant_id)
+
+    def client_count(self, tenant_id: uuid.UUID) -> int:
+        return len(self._connections.get(tenant_id, set()))
+
+    async def broadcast(self, tenant_id: uuid.UUID, data: dict) -> None:
+        """Envía data como JSON a todos los agentes conectados al canal del tenant."""
+        sockets = list(self._connections.get(tenant_id, []))
+        dead: list[WebSocket] = []
+        for ws in sockets:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(tenant_id, ws)
+
+    def broadcast_from_sync(self, tenant_id: uuid.UUID, data: dict) -> None:
+        """Schedula el broadcast desde código síncrono.
+
+        Usa run_coroutine_threadsafe con el loop registrado en startup.
+        Si el loop no está disponible (test puro), es no-op silencioso.
+        """
+        loop = _main_loop
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self.broadcast(tenant_id, data), loop
+                )
+            except Exception as exc:
+                logger.warning("notif_manager: broadcast_from_sync falló: %s", exc)
+
+
+notification_manager = NotificationManager()

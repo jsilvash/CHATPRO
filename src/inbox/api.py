@@ -1,11 +1,15 @@
-"""API REST del inbox humano (Fase 8).
+"""API REST del inbox humano.
 
 Endpoints:
-- GET    /v1/inbox                               — listar conversaciones (filtros status, wa_number_id)
+- GET    /v1/inbox/sla-report                    — reporte SLA del tenant (Fase 25A)
+- GET    /v1/inbox/search                        — búsqueda full-text (Fase 24C)
+- GET    /v1/inbox                               — listar conversaciones (Fase 8, Fase 25B: ?tag=)
 - GET    /v1/inbox/{conversation_id}             — detalle con historial + tool_invocations
-- POST   /v1/inbox/{conversation_id}/take        — asignarse la conversación (status=agent)
-- POST   /v1/inbox/{conversation_id}/reply       — enviar mensaje como agente (outbound)
-- POST   /v1/inbox/{conversation_id}/close       — devolver al bot (status=bot)
+- POST   /v1/inbox/{conversation_id}/take        — asignarse la conversación
+- POST   /v1/inbox/{conversation_id}/reply       — enviar mensaje como agente
+- POST   /v1/inbox/{conversation_id}/close       — devolver al bot (setea resolved_at)
+- POST   /v1/inbox/{conversation_id}/tags        — añadir etiqueta (Fase 25B)
+- DELETE /v1/inbox/{conversation_id}/tags/{tag}  — quitar etiqueta (Fase 25B)
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy import column, func
 from sqlalchemy.dialects.postgresql import TSVECTOR
@@ -23,7 +27,7 @@ from src.agent.models import ToolInvocation
 from src.auth.dependencies import get_current_user
 from src.db.models import User
 from src.db.session import get_db
-from src.inbox.models import HandoffEvent
+from src.inbox.models import CannedResponse, ConversationTag, HandoffEvent
 from src.messaging import dispatcher
 from src.tenancy.context import bypass_tenant_filter, get_current_tenant_id
 from src.wa.models import WaConversation, WaMessage, WaNumber
@@ -56,6 +60,9 @@ class ConversationSummary(BaseModel):
     last_message_at: datetime | None
     turn_count: int
     ai_summary: str | None = None
+    first_response_at: datetime | None = None
+    resolved_at: datetime | None = None
+    tags: list[str] = []
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -126,7 +133,75 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem]
 
 
+class SLAReportOut(BaseModel):
+    date_from: date
+    date_to: date
+    total_conversations: int
+    resolved_conversations: int
+    avg_first_response_seconds: float | None
+    avg_resolution_seconds: float | None
+    p50_first_response_seconds: float | None
+    p90_first_response_seconds: float | None
+    p50_resolution_seconds: float | None
+    p90_resolution_seconds: float | None
+
+
+class TagOut(BaseModel):
+    id: uuid.UUID
+    tag: str
+    created_by_user_id: uuid.UUID | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TagCreateRequest(BaseModel):
+    tag: str
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _load_tags(
+    conv_ids: list[uuid.UUID],
+    tenant_id: uuid.UUID,
+    db: Session,
+) -> dict[uuid.UUID, list[str]]:
+    """Devuelve {conv_id: [tag, ...]} para las conversaciones dadas."""
+    if not conv_ids:
+        return {}
+    with bypass_tenant_filter():
+        rows = (
+            db.query(ConversationTag)
+            .filter(
+                ConversationTag.tenant_id == tenant_id,
+                ConversationTag.wa_conversation_id.in_(conv_ids),
+            )
+            .all()
+        )
+    result: dict[uuid.UUID, list[str]] = {}
+    for row in rows:
+        result.setdefault(row.wa_conversation_id, []).append(row.tag)
+    return result
+
+
+def _conv_summary(conv: WaConversation, tags: list[str]) -> ConversationSummary:
+    return ConversationSummary(
+        id=conv.id,
+        tenant_id=conv.tenant_id,
+        wa_number_id=conv.wa_number_id,
+        wa_contact_phone=conv.wa_contact_phone,
+        wa_contact_name=conv.wa_contact_name,
+        status=conv.status,
+        assigned_user_id=conv.assigned_user_id,
+        last_message_at=conv.last_message_at,
+        turn_count=conv.turn_count,
+        ai_summary=conv.ai_summary,
+        first_response_at=conv.first_response_at,
+        resolved_at=conv.resolved_at,
+        tags=sorted(tags),
+        created_at=conv.created_at,
+    )
 
 
 def _get_conversation(
@@ -171,6 +246,77 @@ def _get_open_handoff(
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
+
+
+@router.get("/sla-report", response_model=SLAReportOut)
+def get_sla_report(
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SLAReportOut:
+    """Reporte SLA del tenant: tiempos de primera respuesta y resolución."""
+    from datetime import timedelta, timezone
+
+    tenant_id = get_current_tenant_id()
+    today = date.today()
+    df = date_from or (today - timedelta(days=30))
+    dt = date_to or today
+
+    df_dt = datetime(df.year, df.month, df.day, tzinfo=timezone.utc)
+    dt_dt = datetime(dt.year, dt.month, dt.day, 23, 59, 59, tzinfo=timezone.utc)
+
+    with bypass_tenant_filter():
+        convs = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.tenant_id == tenant_id,
+                WaConversation.created_at >= df_dt,
+                WaConversation.created_at <= dt_dt,
+            )
+            .all()
+        )
+
+    total = len(convs)
+    resolved = [c for c in convs if c.resolved_at is not None]
+
+    def _pct(values: list[float], p: float) -> float | None:
+        if not values:
+            return None
+        values_sorted = sorted(values)
+        idx = int(len(values_sorted) * p / 100)
+        idx = min(idx, len(values_sorted) - 1)
+        return round(values_sorted[idx], 2)
+
+    first_resp_secs: list[float] = []
+    for c in convs:
+        if c.first_response_at is not None:
+            delta = (c.first_response_at - c.created_at).total_seconds()
+            if delta >= 0:
+                first_resp_secs.append(delta)
+
+    res_secs: list[float] = []
+    for c in resolved:
+        if c.resolved_at is not None:
+            delta = (c.resolved_at - c.created_at).total_seconds()
+            if delta >= 0:
+                res_secs.append(delta)
+
+    avg_first = round(sum(first_resp_secs) / len(first_resp_secs), 2) if first_resp_secs else None
+    avg_res = round(sum(res_secs) / len(res_secs), 2) if res_secs else None
+
+    return SLAReportOut(
+        date_from=df,
+        date_to=dt,
+        total_conversations=total,
+        resolved_conversations=len(resolved),
+        avg_first_response_seconds=avg_first,
+        avg_resolution_seconds=avg_res,
+        p50_first_response_seconds=_pct(first_resp_secs, 50),
+        p90_first_response_seconds=_pct(first_resp_secs, 90),
+        p50_resolution_seconds=_pct(res_secs, 50),
+        p90_resolution_seconds=_pct(res_secs, 90),
+    )
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -282,6 +428,7 @@ def list_inbox(
         description="Filtrar por status: waiting_agent | agent | bot | closed",
     ),
     wa_number_id: uuid.UUID | None = Query(None),
+    tag: str | None = Query(None, description="Filtrar por etiqueta"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -295,18 +442,29 @@ def list_inbox(
             WaConversation.tenant_id == tenant_id
         )
 
-    if status_filter:
-        q = q.filter(WaConversation.status == status_filter)
+        if status_filter:
+            q = q.filter(WaConversation.status == status_filter)
 
-    if wa_number_id:
-        q = q.filter(WaConversation.wa_number_id == wa_number_id)
+        if wa_number_id:
+            q = q.filter(WaConversation.wa_number_id == wa_number_id)
 
-    q = q.order_by(WaConversation.last_message_at.desc().nullslast())
+        if tag:
+            q = q.filter(
+                WaConversation.id.in_(
+                    db.query(ConversationTag.wa_conversation_id).filter(
+                        ConversationTag.tenant_id == tenant_id,
+                        ConversationTag.tag == tag,
+                    )
+                )
+            )
 
-    total = q.count()
-    items = q.offset(offset).limit(limit).all()
+        q = q.order_by(WaConversation.last_message_at.desc().nullslast())
+        total = q.count()
+        items = q.offset(offset).limit(limit).all()
 
-    return ConversationListResponse(items=items, total=total)
+    tags_map = _load_tags([c.id for c in items], tenant_id, db)
+    summaries = [_conv_summary(c, tags_map.get(c.id, [])) for c in items]
+    return ConversationListResponse(items=summaries, total=total)
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
@@ -350,8 +508,9 @@ def get_conversation(
             .all()
         )
 
+    tags_map = _load_tags([conversation_id], tenant_id, db)
     return ConversationDetail(
-        conversation=conv,
+        conversation=_conv_summary(conv, tags_map.get(conversation_id, [])),
         messages=messages,
         tool_invocations=tool_invocations,
         handoff_events=handoff_events,
@@ -519,6 +678,10 @@ def reply_conversation(
         msg.ack = "failed"
         msg.failed_at = now
 
+    # SLA (Fase 25A): primera respuesta del agente.
+    if conv.first_response_at is None:
+        conv.first_response_at = now
+
     conv.last_message_at = now
     db.add(msg)
     db.add(conv)
@@ -585,13 +748,16 @@ def close_conversation(
             detail="La conversación ya está en modo bot.",
         )
 
+    now = datetime.now(UTC)
     conv.status = "bot"
     conv.assigned_user_id = None
+    # SLA (Fase 25A): marcar momento de resolución.
+    conv.resolved_at = now
     db.add(conv)
 
     handoff = _get_open_handoff(conversation_id, tenant_id, db)
     if handoff is not None:
-        handoff.closed_at = datetime.now(UTC)
+        handoff.closed_at = now
 
     db.commit()
     db.refresh(conv)
@@ -623,4 +789,84 @@ def close_conversation(
     except Exception:
         pass
 
-    return conv
+    tags_map = _load_tags([conversation_id], tenant_id, db)
+    return _conv_summary(conv, tags_map.get(conversation_id, []))
+
+
+# ── Tags (Fase 25B) ───────────────────────────────────────────────────────────
+
+
+@router.post("/{conversation_id}/tags", response_model=TagOut, status_code=201)
+def add_tag(
+    conversation_id: uuid.UUID,
+    body: TagCreateRequest,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagOut:
+    """Añade una etiqueta a la conversación.
+
+    Idempotente: si la misma tag ya existe en la conversación devuelve 200.
+    Si es nueva, devuelve 201.
+    """
+
+    tenant_id = get_current_tenant_id()
+    tag_value = (body.tag or "").strip().lower()
+    if not tag_value:
+        raise HTTPException(status_code=422, detail="tag no puede estar vacío")
+    if len(tag_value) > 64:
+        raise HTTPException(status_code=422, detail="tag demasiado largo (máx 64 chars)")
+
+    _get_conversation(conversation_id, tenant_id, db)
+
+    with bypass_tenant_filter():
+        existing = (
+            db.query(ConversationTag)
+            .filter(
+                ConversationTag.tenant_id == tenant_id,
+                ConversationTag.wa_conversation_id == conversation_id,
+                ConversationTag.tag == tag_value,
+            )
+            .first()
+        )
+    if existing:
+        response.status_code = status.HTTP_200_OK
+        return TagOut.model_validate(existing)
+
+    ct = ConversationTag(
+        tenant_id=tenant_id,
+        wa_conversation_id=conversation_id,
+        tag=tag_value,
+        created_by_user_id=current_user.id,
+    )
+    db.add(ct)
+    db.commit()
+    db.refresh(ct)
+    return TagOut.model_validate(ct)
+
+
+@router.delete("/{conversation_id}/tags/{tag}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_tag(
+    conversation_id: uuid.UUID,
+    tag: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Elimina una etiqueta de la conversación. 204 aunque no exista (idempotente)."""
+    tenant_id = get_current_tenant_id()
+    _get_conversation(conversation_id, tenant_id, db)
+
+    tag_value = tag.strip().lower()
+    with bypass_tenant_filter():
+        ct = (
+            db.query(ConversationTag)
+            .filter(
+                ConversationTag.tenant_id == tenant_id,
+                ConversationTag.wa_conversation_id == conversation_id,
+                ConversationTag.tag == tag_value,
+            )
+            .first()
+        )
+    if ct:
+        db.delete(ct)
+        db.commit()
