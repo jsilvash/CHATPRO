@@ -450,3 +450,300 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
         logger.exception(
             "agent.respond falló inesperadamente conv=%s", conversation.id
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fase 7: interfaz simplificada para tests y uso directo sin ORM completo
+# ─────────────────────────────────────────────────────────────────────────────
+
+import json
+import re
+import uuid as _uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+from src.agent.llm import _compute_cost, call_claude_messages
+from src.agent.tool_executor import execute_tool as _execute_tool_fase7
+from src.connectors.base import ToolSchema
+
+
+@dataclass
+class AgentTurnResult:
+    """Resultado de un turno del agente con métricas."""
+
+    response_text: str
+    stop_reason: str  # 'ok'|'max_tool_calls'|'max_cost'|'escalated'|'error'
+    tool_calls_count: int
+    total_cost_cents: float
+    hallucination_flag: bool = False
+    tool_results: list[Any] = field(default_factory=list)
+
+
+_ESCALAR_TOOL = ToolSchema(
+    name="escalar_a_humano",
+    description=(
+        "Escala la conversación a un agente humano cuando el bot no puede resolver "
+        "el problema, el cliente lo solicita explícitamente, o la situación requiere "
+        "intervención humana."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "motivo": {
+                "type": "string",
+                "description": "Razón por la que se escala a un agente humano.",
+            }
+        },
+        "required": ["motivo"],
+    },
+    callable_ref="src.agent.service:_escalate_builtin",
+)
+
+
+def _escalate_builtin(**_: Any) -> dict[str, Any]:
+    return {"escalated": True, "mensaje": "Conversación escalada a un agente humano."}
+
+
+def collect_tools(connector: Any | None) -> list[ToolSchema]:
+    """Reúne los tools del conector activo más el built-in escalar_a_humano."""
+    tools: list[ToolSchema] = []
+    if connector is not None:
+        tools.extend(connector.expose_tools())
+    tools.append(_ESCALAR_TOOL)
+    return tools
+
+
+def render_system_prompt(persona_name: str = "Asistente") -> str:
+    return (
+        f"Eres {persona_name}, un asistente virtual de ventas.\n"
+        "REGLA FUNDAMENTAL: Cuando menciones el precio o el link de un producto, "
+        "DEBES usar los datos exactos devueltos por el tool. "
+        "Si no consultaste el tool, di explícitamente que vas a buscar la información."
+    )
+
+
+def run_agent_turn(
+    *,
+    messages: list[dict[str, Any]],
+    conversation_id: _uuid.UUID,
+    tenant_id: _uuid.UUID,
+    contact_id: _uuid.UUID | None = None,
+    contact_phone: str | None = None,
+    contact_email: str | None = None,
+    connector: Any | None = None,
+    session: Any | None = None,
+    system: str | None = None,
+    model: str = "claude-sonnet-4-6",
+    max_tool_calls: int = _MAX_TOOL_CALLS_PER_TURN,
+    max_cost_cents: float = _MAX_COST_PER_TURN_USD * 100,
+    anthropic_api_key: str | None = None,
+) -> AgentTurnResult:
+    """
+    Ejecuta un turno completo con loop de tool_use.
+
+    Interfaz directa (sin ORM completo de WaConversation) para tests y uso externo.
+    """
+    from src.agent.tool_executor import execute_tool
+
+    tools_schemas = collect_tools(connector)
+    tool_registry: dict[str, ToolSchema] = {t.name: t for t in tools_schemas}
+
+    anthropic_tools = [
+        {
+            "name": t.name,
+            "description": t.description,
+            "input_schema": t.input_schema,
+        }
+        for t in tools_schemas
+    ]
+
+    sys_prompt = system or render_system_prompt()
+    working_messages = list(messages)
+
+    cost_acc: float = 0.0
+    tool_calls_count: int = 0
+    all_tool_results: list[Any] = []
+
+    while True:
+        if tool_calls_count >= max_tool_calls:
+            logger.warning("run_agent_turn: MAX_TOOL_CALLS=%d → escalando", max_tool_calls)
+            return AgentTurnResult(
+                response_text="He llegado al límite de consultas. Un agente humano te ayudará.",
+                stop_reason="max_tool_calls",
+                tool_calls_count=tool_calls_count,
+                total_cost_cents=cost_acc,
+                tool_results=all_tool_results,
+            )
+
+        if cost_acc >= max_cost_cents:
+            logger.warning("run_agent_turn: costo %.4f¢ ≥ límite → escalando", cost_acc)
+            return AgentTurnResult(
+                response_text="La consulta superó el límite de procesamiento. Un agente humano te ayudará.",
+                stop_reason="max_cost",
+                tool_calls_count=tool_calls_count,
+                total_cost_cents=cost_acc,
+                tool_results=all_tool_results,
+            )
+
+        resp, metadata = call_claude_messages(
+            sys_prompt,
+            working_messages,
+            model_id=model,
+            max_tokens=1024,
+            tools=anthropic_tools if anthropic_tools else None,
+        )
+        call_cost_cents = metadata.get("cost_usd", 0.0) * 100
+        cost_acc += call_cost_cents
+
+        if resp.stop_reason == "end_turn":
+            response_text = "".join(
+                b.text for b in resp.content if b.type == "text"
+            )
+            hallucination = _check_anti_hallucination(response_text, all_tool_results)
+            if hallucination:
+                logger.warning("run_agent_turn: posible precio alucinado en respuesta")
+            return AgentTurnResult(
+                response_text=response_text,
+                stop_reason="ok",
+                tool_calls_count=tool_calls_count,
+                total_cost_cents=cost_acc,
+                hallucination_flag=hallucination,
+                tool_results=all_tool_results,
+            )
+
+        if resp.stop_reason == "tool_use":
+            tool_result_blocks: list[dict[str, Any]] = []
+            for block in resp.content:
+                if block.type != "tool_use":
+                    continue
+                tool_calls_count += 1
+                schema = tool_registry.get(block.name)
+                callable_ref = schema.callable_ref if schema else f"unknown:{block.name}"
+
+                result, status, latency_ms = _execute_tool_fase7(
+                    tool_name=block.name,
+                    tool_input=dict(block.input),
+                    callable_ref=callable_ref,
+                    connector=connector,
+                    session=session,
+                    tenant_id=tenant_id,
+                    contact_id=contact_id,
+                    contact_phone=contact_phone,
+                    contact_email=contact_email,
+                )
+                _log_inv(session, tenant_id, conversation_id, block.name,
+                         dict(block.input), result, status, latency_ms)
+                all_tool_results.append(result)
+
+                tool_result_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result, ensure_ascii=False, default=str),
+                })
+
+                if block.name == "escalar_a_humano":
+                    working_messages.append({"role": "assistant", "content": resp.content})
+                    working_messages.append({"role": "user", "content": tool_result_blocks})
+                    return AgentTurnResult(
+                        response_text="Un agente humano continuará la conversación.",
+                        stop_reason="escalated",
+                        tool_calls_count=tool_calls_count,
+                        total_cost_cents=cost_acc,
+                        tool_results=all_tool_results,
+                    )
+
+            working_messages.append({"role": "assistant", "content": resp.content})
+            working_messages.append({"role": "user", "content": tool_result_blocks})
+            continue
+
+        return AgentTurnResult(
+            response_text="Ocurrió un error inesperado.",
+            stop_reason="error",
+            tool_calls_count=tool_calls_count,
+            total_cost_cents=cost_acc,
+            tool_results=all_tool_results,
+        )
+
+
+def _log_inv(session, tenant_id, conversation_id, tool_name, tool_input,
+             result, status, latency_ms):
+    if session is None:
+        return
+    try:
+        from src.agent.models import ToolInvocation
+        from datetime import datetime, timezone
+        inv = ToolInvocation(
+            id=_uuid.uuid4(),
+            tenant_id=tenant_id,
+            wa_conversation_id=conversation_id,
+            tool_name=tool_name,
+            tool_use_id="",
+            input=tool_input,
+            output=result if isinstance(result, (dict, list)) else {"value": str(result)},
+            status=status,
+            latency_ms=latency_ms,
+        )
+        session.add(inv)
+        session.flush()
+    except Exception as exc:
+        logger.warning("No se pudo persistir tool_invocation: %s", exc)
+
+
+# ─── Anti-hallucination ───────────────────────────────────────────────────────
+
+_PRICE_RE = re.compile(
+    r"(?:AR\$|\$|USD|ARS|€|precio|cuesta|vale|costo)[\s:]*"
+    r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)",
+    re.IGNORECASE,
+)
+
+
+def _collect_numbers(obj: Any, out: set[str]) -> None:
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _collect_numbers(v, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_numbers(item, out)
+    elif isinstance(obj, (int, float)):
+        # Normalizar: 45.0 → "45", 45.99 → "45.99", 45.90 → "45.9"
+        out.add(str(int(obj)) if obj == int(obj) else str(obj))
+        out.add(f"{obj:.2f}")  # también "45.00" para comparar
+    elif isinstance(obj, str):
+        n = obj.replace(",", ".")
+        if re.match(r"^\d+(\.\d+)?$", n):
+            out.add(n)
+            # Agregar forma sin decimales trailing zeros
+            if "." in n:
+                out.add(n.rstrip("0").rstrip("."))
+
+
+def _normalize_price(raw: str) -> str:
+    s = raw.strip()
+    if re.match(r"^\d{1,3}(\.\d{3})+(,\d{1,2})?$", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")
+    return s
+
+
+def _check_anti_hallucination(response_text: str, tool_results: list[Any]) -> bool:
+    """
+    Retorna True si hay un precio en la respuesta no presente en tool_results.
+    """
+    if not tool_results:
+        return bool(_PRICE_RE.search(response_text))
+
+    grounded: set[str] = set()
+    for r in tool_results:
+        _collect_numbers(r, grounded)
+
+    for match in _PRICE_RE.finditer(response_text):
+        normalized = _normalize_price(match.group(1))
+        if normalized not in grounded and normalized.split(".")[0] not in grounded:
+            logger.warning(
+                "Anti-hallucination: '%s' no en tool_results", match.group(1)
+            )
+            return True
+    return False

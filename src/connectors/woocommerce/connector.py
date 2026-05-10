@@ -471,6 +471,24 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "").strip()
 
 
+def _product_text(p: dict) -> str:
+    """Construye el texto embedible del producto (compatibilidad Fase 6)."""
+    parts = [
+        p.get("name", ""),
+        p.get("short_description", ""),
+        p.get("description", ""),
+        p.get("sku", ""),
+    ]
+    for cat in p.get("categories") or []:
+        parts.append(cat.get("name", ""))
+    for attr in p.get("attributes") or []:
+        name = attr.get("name", "")
+        options = ", ".join(attr.get("options") or [])
+        if name:
+            parts.append(f"{name}: {options}")
+    return " ".join(s for s in parts if s).strip()
+
+
 def get_or_create_connector_def(db, name: str, kind: str, version: str) -> ConnectorDef:
     """Retorna o crea el ConnectorDef para este conector."""
     existing = db.query(ConnectorDef).filter(ConnectorDef.name == name).first()
