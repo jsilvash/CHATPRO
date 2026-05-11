@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
+import Link from "next/link"
 import { apiGet, apiFetch, API_URL } from "@/lib/api"
 import type { TenantMetricsDashboard, StreamMetrics, ExportJobOut, ExportStatusOut } from "@/lib/types"
 import { Card, CardContent } from "@/components/ui/card"
@@ -19,9 +20,15 @@ import {
   Loader2,
   CheckCircle2,
   ExternalLink,
+  Smartphone,
+  Plug,
+  X,
+  PartyPopper,
+  ChevronRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
+import { useQuery } from "@tanstack/react-query"
 
 function MetricCard({
   title,
@@ -51,6 +58,128 @@ function MetricCard({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// ── Onboarding Banner ─────────────────────────────────────────────────────────
+
+const DISMISS_KEY = "chatpro_onboarding_dismissed"
+
+function OnboardingBanner() {
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false
+    return localStorage.getItem(DISMISS_KEY) === "1"
+  })
+
+  const { data: waNumbers } = useQuery<{ items: unknown[]; total: number }>({
+    queryKey: ["wa-numbers-count"],
+    queryFn: () => apiGet("/v1/wa-numbers"),
+    staleTime: 60_000,
+  })
+
+  const { data: connectors } = useQuery<{ items: unknown[]; total: number }>({
+    queryKey: ["connectors-count"],
+    queryFn: () => apiGet("/v1/connector-configs"),
+    staleTime: 60_000,
+  })
+
+  if (dismissed) return null
+  if (waNumbers === undefined || connectors === undefined) return null
+
+  const hasWaNumber = (waNumbers?.total ?? 0) > 0
+  const hasConnector = (connectors?.total ?? 0) > 0
+  if (hasWaNumber && hasConnector) return null
+
+  function dismiss() {
+    localStorage.setItem(DISMISS_KEY, "1")
+    setDismissed(true)
+  }
+
+  const steps = [
+    {
+      done: hasWaNumber,
+      icon: Smartphone,
+      title: "Conecta un número de WhatsApp",
+      desc: "Vincula tu primer número de WhatsApp para empezar a recibir mensajes.",
+      href: "/wa-numbers",
+      cta: "Ir a Números WA",
+    },
+    {
+      done: false,
+      icon: Bot,
+      title: "Configura una persona IA",
+      desc: "Define el tono y personalidad del agente que responderá automáticamente.",
+      href: "/personas",
+      cta: "Crear Persona",
+    },
+    {
+      done: hasConnector,
+      icon: Plug,
+      title: "Conecta tu tienda (opcional)",
+      desc: "Integra WooCommerce o Shopify para responder consultas de pedidos y productos.",
+      href: "/connectors",
+      cta: "Ver Conectores",
+    },
+  ]
+
+  const allDone = steps.every((s) => s.done)
+
+  return (
+    <div className="relative rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 p-5">
+      <button
+        onClick={dismiss}
+        className="absolute top-3 right-3 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+        title="Cerrar"
+      >
+        <X className="w-4 h-4" />
+      </button>
+      <div className="flex items-center gap-2 mb-4">
+        <PartyPopper className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+        <h2 className="text-sm font-semibold text-blue-900 dark:text-blue-200">
+          {allDone ? "¡Todo listo!" : "Primeros pasos para empezar con ChatPro"}
+        </h2>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {steps.map((step, i) => {
+          const Icon = step.icon
+          return (
+            <div
+              key={i}
+              className={cn(
+                "rounded-lg border p-4 bg-white dark:bg-zinc-900 flex flex-col gap-2",
+                step.done
+                  ? "border-green-200 dark:border-green-800 opacity-60"
+                  : "border-zinc-200 dark:border-zinc-700",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {step.done ? (
+                  <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0" />
+                ) : (
+                  <div className="w-5 h-5 rounded-full border-2 border-zinc-300 dark:border-zinc-600 flex items-center justify-center shrink-0">
+                    <span className="text-xs font-bold text-zinc-500">{i + 1}</span>
+                  </div>
+                )}
+                <Icon className="w-4 h-4 text-zinc-500" />
+                <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                  {step.title}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500 leading-relaxed">{step.desc}</p>
+              {!step.done && (
+                <Link
+                  href={step.href}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline mt-auto"
+                >
+                  {step.cta}
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </Link>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -278,6 +407,8 @@ export default function DashboardPage() {
           </button>
         </div>
       </div>
+
+      <OnboardingBanner />
 
       {error && (
         <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 text-red-700 text-sm dark:bg-red-900/20 dark:text-red-400">

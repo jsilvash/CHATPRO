@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Send, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -15,6 +15,17 @@ interface ReplyBoxProps {
 export function ReplyBox({ onSend, disabled, onCannedToggle, showCannedActive }: ReplyBoxProps) {
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
+
+  // Aviso de cambios no guardados al navegar fuera
+  useEffect(() => {
+    if (!text.trim()) return
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault()
+      e.returnValue = ""
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
+  }, [text])
 
   async function handleSend() {
     const trimmed = text.trim()

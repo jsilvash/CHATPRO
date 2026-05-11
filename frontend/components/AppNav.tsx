@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3, BookOpen, Key, Webhook, Search, CreditCard } from "lucide-react"
+import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3, BookOpen, Key, Webhook, Search, CreditCard, Settings, Shield } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
@@ -28,6 +28,8 @@ const navItems = [
   { href: "/knowledge", label: "Conocimiento", icon: BookOpen },
   { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/webhooks", label: "Webhooks", icon: Webhook },
+  { href: "/audit-log", label: "Audit Log", icon: Shield },
+  { href: "/settings", label: "Configuración", icon: Settings },
 ]
 
 export function AppNav({ session }: AppNavProps) {
