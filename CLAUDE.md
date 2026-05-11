@@ -44,7 +44,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
 | 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
 | 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ Mergeada a main |
-| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ PR abierto |
+| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main |
+| 29 | Office hours + waiting time + menciones notas + métricas agente | ✅ Mergeada a main |
 | F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
 | F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
 | F3 | Frontend: Dashboard operativo + gestión usuarios + contactos + SLA | ✅ PR abierto |
@@ -251,6 +252,10 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Deactivate user endpoint | `PATCH /v1/users/{user_id}/deactivate` en `src/api/v1/users.py`, declarado ANTES de `GET /{user_id}`. Solo admin/owner. 422 si autodesactivación. Reasigna convs activas vía `_find_agent_with_least_load()` (ya en service.py). Si no hay agentes → convs quedan `assigned_user_id=None`. Respuesta: `{deactivated_user_id, reassigned_conversations, new_assignee_id}`. | Fase 28 |
 | Export CSV inbox | `GET /v1/inbox/export` declarado ANTES de `/{conversation_id}` (mismo patrón que /bulk-*). Acepta mismos filtros que GET /v1/inbox. Sin paginación. Content-Type text/csv. Columnas: id, wa_contact_name, wa_contact_phone, status, assigned_user_id, created_at, last_message_at, resolved_at, tags, notes_count. Tags separadas por `\|`. | Fase 28 |
 | Búsqueda contactos | `GET /v1/contacts/search?q=&limit=` declarado ANTES de `/{contact_id}` en `src/contacts/api.py`. ILIKE en `phone_e164 OR display_name`. `conversations_count` calculado via COUNT en `WaConversation.contact_id`. Schema `ContactSearchOut`. Aislamiento por `current_user.tenant_id`. | Fase 28 |
+| Office hours | Módulo `src/office_hours/` (models.py + service.py + api.py). Tabla `office_hours` (migración 0026): tenant_id, wa_number_id FK nullable, day_of_week (0=lunes), hour_start, hour_end, is_active, out_of_hours_message. Registros específicos del número tienen prioridad sobre globales (wa_number_id=None). Sin registros activos → bot siempre atiende. `check_office_hours()` usa `list(db.query(...).all())` para compatibilidad con MagicMock en tests. Inyectado al inicio de `agent/service.respond()`. CRUD en `/v1/office-hours`. | Fase 29 |
+| Waiting since en conversaciones | `WaConversation.waiting_since` (DateTime nullable, migración 0027). Se setea en `_auto_escalate_if_needed()` al pasar a waiting_agent; se limpia en `take_conversation()` y `reply_conversation()` al pasar a agent. `ConversationSummary.waiting_minutes: int | None` calculado en `_conv_summary()`. `GET /v1/inbox?sort=waiting_time` ordena por `waiting_since ASC NULLS LAST`. `GET /v1/inbox/overdue?threshold_minutes=30` declarado ANTES de `/{conversation_id}`. | Fase 29 |
+| Menciones en notas (@usuario) | Migración 0028 agrega `mentions JSONB default '[]'` a `conversation_notes`. `_MENTION_PATTERN = re.compile(r"@([\w.+-]+(?:@[\w.-]+)?)")` en `inbox/api.py`. `_resolve_mentions(text, tenant_id, db)` retorna `list[uuid.UUID]` buscando por email exacto o full_name case-insensitive (solo usuarios activos del tenant). Persiste como lista de strings UUID en JSONB. Notifica via `notification_manager.broadcast_from_sync(tenant_id, {event: "note.mention", ...})`. `NoteOut.mentions: list[uuid.UUID]`. | Fase 29 |
+| Métricas de agente por período | `GET /v1/users/{user_id}/metrics?date_from=&date_to=` declarado ANTES de `/{user_id}` GET. Accesible por admin/owner O el propio usuario; 403 si agente ve a otro agente; 404 si user_id no pertenece al tenant. Calcula: `conversations_handled` (resolved_at en período), `avg_first_response_sec`, `avg_resolution_sec` (ambos en segundos float nullable), `messages_sent` (direction=out), `notes_created`, `busiest_hour` (hora 0-23 con más msgs enviados, nullable). Schema `AgentMetricsOut` en `src/api/v1/users.py`. | Fase 29 |
 | Frontend stack | Next.js 16.2.x + TypeScript + Tailwind v4 + shadcn/ui (manual) + TanStack Query v5 + Zustand + jose. Directorio `frontend/` en raíz del repo. | Fase F2 |
 | Auth frontend | Cookies httpOnly `chatpro_access` + `chatpro_refresh`. Next.js API Routes hacen proxy al backend. `proxy.ts` (guard de rutas, v16 renombró `middleware.ts`→`proxy.ts`). `cookies()` es async en v16. | Fase F2 |
 | WS frontend | `useConversationSocket(convId)`: WebSocket a `/ws/inbox/{convId}?token=<jwt>`. Token obtenido de `/api/auth/ws-token` (Next.js API route que lee cookie httpOnly). Auto-reconexión tras 3s. | Fase F2 |
@@ -321,7 +326,182 @@ Reglas:
 
 ---
 
-## Prompt de arranque — Fase 29 (siguiente prioridad del backlog)
+## Prompt de arranque — Fase F5 (siguiente prioridad frontend)
+
+```
+Retomo Fase F5 — Frontend: Office hours + números WA + personas + gestión inbox avanzada.
+Contexto:
+- Fase F4 (conectores + canned responses + métricas SSE) completada. PR abierto en rama claude/fase-f4-frontend-tMph5.
+- Rama nueva: git checkout -b claude/fase-f5-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-28. Frontend en frontend/ con Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F4" y este prompt). Nada más.
+
+Estado tras Fase F4 (ya en rama):
+  A. Conectores: /connectors (lista+crear+eliminar) y /connectors/[id] (stats+buscar+credenciales).
+  B. Canned responses: /canned-responses (CRUD + búsqueda debounced + modal preview variables).
+  C. Dashboard SSE: EventSource a /v1/metrics/stream + fallback polling 30s + badge "En vivo".
+  D. Nav: AppNav añade /connectors (Plug) y /canned-responses (Zap).
+
+Opciones a implementar en Fase F5 (en orden A → B → C → D):
+  A. Gestión de office hours (requiere Fase 29 backend mergeada):
+     - CRUD /v1/office-hours
+     - Selección de número WA + día de semana + hora inicio/fin
+  B. Panel números WA:
+     - Listar (GET /v1/wa-numbers), ver estado WAHA
+     - Métricas por número (GET /v1/wa-numbers/{id}/metrics con filtro fecha)
+     - Página /wa-numbers/[id] con métricas + top contacts
+  C. Gestión de personas (IA):
+     - CRUD /v1/personas (GET/POST/PATCH/DELETE)
+     - Campos: nombre, tono, locale, locale_secondary, auto_detect_locale
+  D. Filtros avanzados inbox:
+     - Filtro por assigned_user_id + date_from + date_to en /inbox
+     - Export CSV (GET /v1/inbox/export) con botón de descarga
+     - Búsqueda full-text (GET /v1/inbox/search?q=)
+
+Reglas:
+- NO tocar src/ Python
+- Arrancar dev server y probar manualmente antes de reportar listo
+- Commit + push + actualizar CLAUDE.md + generar prompt F6
+```
+
+---
+
+## Backlog futuro — fases propuestas (no priorizadas)
+
+> Estas fases no están planificadas con detalle todavía. Cuando se las retome, hacer
+> discovery + escribir MD propio antes de tocar código (regla del proyecto).
+
+### 🔴 Bloqueantes para v1 comercial (sin esto no se vende)
+
+| # | Título | Por qué bloquea |
+|---|---|---|
+| F1 | **Frontend Next.js (panel del tenant)** | Backend tiene 60+ endpoints REST sin UI. Un cliente no puede usar ChatPro hoy. Estimado: 5-10 fases (auth/login screen, alta de números, inbox, configuración, métricas, conectores, KB, agentes). |
+| F2 | **Deploy a producción + CI/CD** | Solo existe `docker-compose.yml` para dev. Falta Railway/Fly.io/k8s, pipeline de tests automáticos, migraciones automatizadas, secrets management. |
+| F3 | **Stripe billing (cobro real)** | Fase 11 hizo cuotas y métricas, pero el cobro automático mensual no existe. Sin esto no se factura. |
+| F4 | **Email transaccional** | No hay SMTP/SES/Resend integrado para signup, password recovery, alertas de cuota, notificaciones de agente. |
+| F5 | **Resolver §14 del plan** | Nombre definitivo del producto, dominio, providers de IA/storage/email — siguen sin decidirse formalmente. |
+
+### 🟡 Funcionalidades del backlog original sin implementar
+
+| # | Título | Origen |
+|---|---|---|
+| F6 | **Tool de agenda** (Google Calendar / Calendly) | Plan §3 Fase 7 mencionaba "Tool: agendar (calendar abstracto)" — no existe. |
+| F7 | **Tools custom por tenant** | HTTP request al backend del tenant con auth firmada. Plan §3 Fase 7. |
+| F8 | **Conectores e-commerce adicionales** | Tienda Nube, Magento, VTEX, Jumpseller. Hoy solo Woo + Shopify. |
+| F9 | **Conectores CRM** | HubSpot, Pipedrive, Salesforce. Plan §5. |
+| F10 | **Conectores helpdesk** | Zendesk, Intercom, Freshdesk. Plan §5. |
+| F11 | **Conectores KB extra** | Notion, Google Drive, Google Sheets, Confluence. Plan §5. |
+| F12 | **Sharding WAHA multi-instancia** | Hoy todos los tenants comparten `waha_node_id="default"`. El campo existe pero el sharder lógico no. Plan §4. |
+| F13 | **Observabilidad real** | OpenTelemetry + Prometheus + Loki — mencionado en plan §3, no implementado. |
+| F14 | **Audit log inmutable + retención configurable** | Plan §13.10 y §9 — parcial. |
+
+### 🟢 Numeración faltante (cosmético)
+
+Fases 13, 14, 15, 17 nunca existieron — saltos de numeración cuando se agregaron
+feature phases (16 retomo, 18+). No es deuda, es histórico.
+
+---
+
+## Prompt de arranque — Fase 30 (siguiente prioridad del backlog)
+
+```
+Retomo Fase 30 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
+Contexto:
+- Fase 29 (office hours + waiting time + menciones notas + métricas agente) en PR #25.
+- Rama nueva: git fetch origin main && git checkout -b claude/phase30-XXXXX origin/main
+- Main contiene Fases 0-12 + 16 + 18-29 funcionales.
+- Primero: leer SOLO CLAUDE.md (sección "Decisiones de arquitectura" y este prompt). Nada más.
+
+Estado tras Fase 29 (ya en rama, pendiente merge a main):
+  A. Office hours (respuestas automáticas programadas):
+     - Módulo src/office_hours/ (models.py, service.py, api.py).
+     - Tabla office_hours (migración 0026): tenant_id, wa_number_id FK nullable,
+       day_of_week, hour_start, hour_end, is_active, out_of_hours_message.
+     - CRUD en GET/POST/PUT/DELETE /v1/office-hours.
+     - check_office_hours() inyectado en agent/service.respond().
+     - Tests en tests/test_fase29_office_hours.py (10 tests).
+  B. Waiting time (conversaciones en espera con tiempo):
+     - WaConversation.waiting_since (DateTime nullable, migración 0027).
+     - ConversationSummary.waiting_minutes calculado en _conv_summary().
+     - GET /v1/inbox?sort=waiting_time ordena por waiting_since ASC NULLS LAST.
+     - GET /v1/inbox/overdue?threshold_minutes=30 endpoint.
+     - Tests en tests/test_fase29_waiting_time.py (7 tests).
+  C. Menciones en notas (@usuario):
+     - conversation_notes.mentions JSONB (migración 0028).
+     - _resolve_mentions() en inbox/api.py: busca @email o @nombre.
+     - Notificación WS via notification_manager (event: "note.mention").
+     - NoteOut.mentions: list[uuid.UUID].
+     - Tests en tests/test_fase29_note_mentions.py (7 tests).
+  D. Métricas de agente por período:
+     - GET /v1/users/{user_id}/metrics?date_from=&date_to=
+     - Calcula: conversations_handled, avg_first_response_sec, avg_resolution_sec,
+       messages_sent, notes_created, busiest_hour.
+     - Acceso: admin/owner O propio usuario. 403 agente→otro. 404 si no en tenant.
+     - Tests en tests/test_fase29_agent_metrics.py (7 tests).
+  - Total: 31 tests nuevos, 0 regresiones.
+  - Fallo pre-existente conocido: test_fase23_export.py::test_crear_export_job_devuelve_202
+    (export_tenant_data importado localmente, no patcheable — no es regresión).
+
+Opciones a implementar en Fase 30 (en ESTRICTO orden A→B→C→D SIN pausar):
+Para cada opción: implementar código + tests + ejecutar tests + avanzar solo si pasan.
+Comando de tests: DATABASE_URL=postgresql://chatpro:chatpro@localhost:5432/chatpro_test uv run pytest
+
+────────────────────────────────────────────────────────────────
+OPCIÓN A — Chatbot con transferencia a número externo
+────────────────────────────────────────────────────────────────
+- Cuando el bot no puede resolver una consulta, ofrecer transferencia a soporte por
+  un número de WhatsApp externo configurable por tenant/número.
+- Campo `escalation_phone` en WaNumber (o tabla separada de config bot).
+- Acción del agente: si llama tool `escalar_a_soporte`, bot envía link wa.me/ al usuario
+  y registra HandoffEvent con reason="external_escalation".
+- Tests en tests/test_fase30_escalation.py.
+
+────────────────────────────────────────────────────────────────
+OPCIÓN B — Encuestas de satisfacción (CSAT) automáticas
+────────────────────────────────────────────────────────────────
+- Al cerrar conversación, enviar encuesta automática con botones interactivos WAHA
+  (1-5 estrellas o 👍/👎).
+- Tabla `csat_responses`: tenant_id, wa_conversation_id, score, comment, responded_at.
+- Config por tenant: is_csat_enabled, csat_question_text.
+- GET /v1/inbox/csat-report?date_from=&date_to= → avg_score, total_responses, distribution.
+- Tests en tests/test_fase30_csat.py.
+
+────────────────────────────────────────────────────────────────
+OPCIÓN C — Blacklist / contactos bloqueados
+────────────────────────────────────────────────────────────────
+- Tabla `blocked_contacts`: tenant_id, wa_number_id FK nullable, phone_e164, reason, blocked_at.
+- Si número entrante está en blacklist → ignorar webhook silenciosamente (no crear conv).
+- POST /v1/blocked-contacts, DELETE /v1/blocked-contacts/{id}, GET list.
+- Tests en tests/test_fase30_blacklist.py.
+
+────────────────────────────────────────────────────────────────
+OPCIÓN D — Panel de rendimiento de knowledge base (RAG)
+────────────────────────────────────────────────────────────────
+- Loggear cada llamada a busqueda_rag: query, k_results, top_score, used_in_response.
+- Tabla `rag_query_log`: tenant_id, kb_document_id FK nullable, query_text, results_count,
+  top_score, created_at.
+- GET /v1/knowledge/stats → total_queries, avg_top_score, queries_without_results,
+  top_documents [{doc_id, title, hit_count}].
+- Tests en tests/test_fase30_rag_stats.py.
+
+────────────────────────────────────────────────────────────────
+Al cerrar (tras completar D y que todos los tests pasen):
+  1. git add <archivos específicos>
+  2. git commit -m "feat(fase-30): escalación externa + CSAT + blacklist + RAG stats"
+  3. git push -u origin <rama>
+  4. Crear PR con descripción detallada de cada opción.
+  5. Actualizar CLAUDE.md:
+     - Tabla de fases: Fase 29 → ✅ Mergeada a main, Fase 30 → ✅ PR abierto
+     - Agregar decisiones arquitectónicas de Fase 30
+     - Reemplazar "Prompt de arranque — Fase 30" con "Prompt de arranque — Fase 31"
+  6. Generar el prompt de arranque para Fase 31 (regla recursiva).
+
+NO tocar: src/knowledge/ salvo indicación explícita (excepto opción D).
+```
+
+---
+
+## Prompt de arranque — Fase 29 (COMPLETADA — ver Fase 30 arriba)
 
 ```
 Retomo Fase 29 — Próxima fase del backlog (ver CLAUDE.md + WHATSAPP_HUB_PLAN.md).
@@ -461,7 +641,7 @@ Contexto:
        - Calcular tiempo_primera_respuesta (bot o agente) por conversación.
        - Calcular tiempo_de_resolución (apertura → close).
        - Endpoint: GET /v1/inbox/sla-report?date_from=&date_to= con percentiles p50/p90/p99.
-       - Persistir first_response_at / resolved_at en WaConversation (migración nueva).
+       - Persistir first_response_at / resolved_at en WaConversación (migración nueva).
 
     B. Etiquetas (tags) en conversaciones:
        - Tabla conversation_tags: {id, tenant_id, wa_conversation_id, tag, created_by_user_id}.

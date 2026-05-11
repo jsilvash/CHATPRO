@@ -163,6 +163,11 @@ class WaConversation(Base, TimestampMixin):
     resolved_at: Mapped[datetime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
+    # Fase 29B: momento en que la conversación entró en waiting_agent (para calcular espera).
+    # Se setea al pasar a waiting_agent, se limpia al pasar a agent.
+    waiting_since: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         sa.UniqueConstraint(
