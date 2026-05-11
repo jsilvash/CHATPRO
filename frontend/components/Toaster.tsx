@@ -16,7 +16,7 @@ export function Toaster() {
   if (!toasts.length) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+    <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-sm w-full pointer-events-none">
       {toasts.map((t) => (
         <div
           key={t.id}
@@ -26,6 +26,7 @@ export function Toaster() {
             t.variant === "destructive" && "border-red-200 dark:border-red-800",
             (!t.variant || t.variant === "default") && "border-zinc-200 dark:border-zinc-700",
           )}
+          role="alert"
         >
           <ToastIcon variant={t.variant} />
           <div className="flex-1 min-w-0">
@@ -37,6 +38,7 @@ export function Toaster() {
           <button
             onClick={() => removeToast(t.id)}
             className="shrink-0 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+            aria-label="Cerrar notificación"
           >
             <X className="w-3.5 h-3.5" />
           </button>

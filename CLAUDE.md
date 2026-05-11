@@ -56,6 +56,9 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
 | F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ Mergeada a main |
 | F10 | Frontend: Configuración tenant + onboarding wizard + UX inbox + audit log | ✅ PR abierto |
+| F11 | Frontend: Páginas de error + notificaciones browser + accesibilidad + gestión de sesión | ✅ PR abierto |
+| F12 | Frontend: Dark mode + responsive móvil + rendimiento + empty states | ✅ PR abierto |
+| F13 | Frontend: Toasts globales + Command palette + Exportación GDPR + Billing | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -311,6 +314,72 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Timestamps relativos en mensajes | `MessageBubble.tsx`: componente `RelativeTime` usa `formatDistanceToNow` existente + `setInterval` de 60s para refrescar si el mensaje es <1h. `title` con fecha absoluta al hacer hover. | Fase F10 |
 | Audit log table | `app/(app)/audit-log/page.tsx`: GET /v1/audit-log con filtros action/target_type/date_from/date_to + paginación (50 por página). Tabla con columnas fecha/actor/acción/objetivo/IP. Botón export CSV (GET /v1/audit-log/export). `actionVariant()` colorea Badge según tipo de acción. | Fase F10 |
 | Nav F10 | `AppNav.tsx` añade rutas: `/audit-log` (Shield icon), `/settings` (Settings icon). | Fase F10 |
+| Páginas de error personalizadas | `app/not-found.tsx`: 404 con links a /dashboard e /inbox. `app/error.tsx`: boundary de error con botón "Reintentar" (reset) + digest. `app/(app)/loading.tsx`: skeleton animado (cards + filas de tabla) con `role="status"` y `aria-label`. | Fase F11 |
+| Notificaciones de browser | `use-notifications.ts`: `sendBrowserNotification()` para `conversation.waiting_agent` — solo cuando `document.visibilityState !== "visible"` y permiso granted. `requestNotificationPermission()` exportada. `NotificationPermissionRequester`: cliente que pide permiso tras 3s de mount, integrado en `app/(app)/layout.tsx`. | Fase F11 |
+| Accesibilidad | `SkipToContent`: link oculto (`sr-only`) con `focus:not-sr-only` que salta a `#main-content`. Añadido en root layout. `main#main-content` con `tabIndex={-1}` en app layout. Badge de inbox envuelto en `<span aria-live="polite" aria-label="...">` en AppNav. | Fase F11 |
+| Gestión de sesión | `use-session-expiry.ts`: hook que compara `tokenExp` (Unix) con `Date.now()` cada 10s. Retorna `status: "ok" | "expiring_soon" | "expired"` y `secondsLeft`. `SessionExpiryBanner`: banner amber cuando quedan <5min (botón "Extender sesión" → `POST /api/auth/refresh`), banner rojo al expirar (link logout). Integrado en app layout entre AppNav y main. | Fase F11 |
+| Dark mode toggle | `components/ThemeProvider.tsx`: contexto React con `theme: light\|dark\|system`. Persiste en `localStorage["chatpro-theme"]`. En "system" detecta `matchMedia("prefers-color-scheme: dark")` y escucha cambios. Aplica/quita clase `.dark` en `document.documentElement`. `@custom-variant dark (&:where(.dark, .dark *))` en globals.css. CSS variables en selector `.dark` (no media query). `suppressHydrationWarning` en root `<html>`. Incluido en `Providers.tsx`. Toggle Sun/Moon/Monitor en footer de AppNav. | Fase F12 |
+| Responsive móvil AppNav | `AppNav.tsx`: estado `mobileOpen`. Botón hamburger `<button fixed z-40>` visible solo en `<md` (hidden en `md:`). Overlay backdrop `<div fixed inset-0 bg-black/40>` cuando open. Nav con `fixed inset-y-0 left-0 w-64 -translate-x-full md:translate-x-0` en móvil vs `md:relative md:w-56` en desktop. `app/(app)/layout.tsx` añade `pt-12 md:pt-0` en `<main>` para el botón hamburger. | Fase F12 |
+| EmptyState reutilizable | `components/EmptyState.tsx`: props `icon` (LucideIcon), `title`, `description?`, `action?` (ReactNode). Círculo con icono + anillo dashed decorativo. Aplicado en: InboxList (sin convs), /contacts (sin resultados + búsqueda vacía), /knowledge (sin docs), /connectors (sin configs), /api-keys (sin keys), /webhooks (sin webhooks). | Fase F12 |
+| ConversationCard memoizado | `ConversationCard` envuelto en `React.memo` para evitar re-renders en actualizaciones de lista. `useMemo` para `hasAdvancedFilters` en InboxList. `prefetch` explícito en Links del nav. | Fase F12 |
+| Toast notifications globales | `hooks/use-toast.ts`: Zustand store `useToastStore` con `addToast(message, type)` + auto-dismiss 4s. `components/Toaster.tsx` renderizado en `app/(app)/layout.tsx`. Tres tipos: success/error/info con iconos y colores. `useToast()` hook con `.success()`, `.error()`, `.info()` shortcuts. Integrado en: connectors, api-keys, webhooks, knowledge, canned-responses. | Fase F13 |
+| Command palette Cmd+K | `components/CommandPalette.tsx`: modal global activado con Cmd+K / Ctrl+K. Búsqueda debounced 300ms en paralelo: `GET /v1/contacts/search?q=` y `GET /v1/inbox?search=`. Grupos "Conversaciones" y "Contactos". Navegación con ↑↓ + Enter. Registrado en `app/(app)/layout.tsx`. | Fase F13 |
+| Exportación GDPR frontend | `components/GdprExport.tsx`: `POST /v1/tenants/me/export` → polling `GET .../status` cada 3s via `setInterval`. Cuando `status=done` → `GET .../download` (URL firmada). Estados: queued/processing/done/error con iconos. Integrado en `/dashboard`. Auto-dismiss polling en unmount via `useEffect(() => () => stopPolling(), [])`. | Fase F13 |
+| Página billing | `app/(app)/billing/page.tsx`: Carga en paralelo `GET /v1/metrics/summary` + `GET /v1/quotas` + `GET /v1/metrics/dashboard`. Barras de progreso `UsageBar` con warning al 80% y crítico al 95%. Métricas del mes: mensajes_in/out, coste LLM €, almacenamiento KB, peticiones API. Estado actual: convs activas, agentes online, sin asignar. AppNav añade `/billing` (CreditCard icon). | Fase F13 |
+
+---
+
+## Prompt de arranque — Fase F14 (siguiente prioridad frontend)
+
+```
+Retomo Fase F14 — Frontend: Mejoras de onboarding + tutoriales + ajustes de tenant.
+Contexto:
+- Fase F13 (toasts globales + command palette + exportación GDPR + billing) completada. PR abierto en rama claude/fase-f13-frontend-dle8H.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f14-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F13 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F13" y este prompt). Nada más.
+
+Estado tras Fase F13 (ya en rama claude/fase-f13-frontend-dle8H):
+  A. Toast notifications globales:
+     - hooks/use-toast.ts: Zustand store + auto-dismiss 4s. Toaster en app/(app)/layout.tsx.
+     - Integrado en connectors, api-keys, webhooks, knowledge, canned-responses.
+  B. Command palette (Cmd+K / Ctrl+K):
+     - components/CommandPalette.tsx: búsqueda debounced en paralelo de contactos + convs.
+     - Grupos "Conversaciones" y "Contactos". Navegación ↑↓ + Enter. Esc para cerrar.
+  C. Exportación GDPR:
+     - components/GdprExport.tsx: botón en /dashboard. POST → polling cada 3s → descarga.
+     - Estados: queued/processing/done/error con iconos.
+  D. Página de billing (/billing):
+     - Métricas del mes (GET /v1/metrics/summary) + cuotas (GET /v1/quotas) + estado actual.
+     - Barras de progreso UsageBar con warning 80% / crítico 95%.
+     - Nav: AppNav añade /billing (CreditCard icon).
+
+Opciones a implementar en Fase F14 (en orden A → B → C → D):
+  A. Configuración del tenant (perfil / ajustes):
+     - /settings: PATCH /v1/tenants/me con nombre, plan visible, zona horaria.
+     - Formulario con validación client-side + toast de éxito/error.
+     - Sección de danger zone: eliminar cuenta (requiere confirmación doble).
+
+  B. Onboarding checklist:
+     - Componente OnboardingChecklist en /dashboard (collapsable, desaparece cuando está completo).
+     - Pasos: conectar número WA, crear persona IA, añadir conector, invitar agente.
+     - Estado persistido en localStorage por tenant_id.
+
+  C. Filtros en /billing con historial de métricas:
+     - GET /v1/metrics?from=&to= → gráfico de barras de uso diario (sin librería externa: SVG).
+     - Selector de período: últimos 7d / 30d / mes actual.
+     - Tabla de días con mensajes_in/out/coste por día.
+
+  D. Mejoras en /wa-numbers/[id]:
+     - Botón "Reconectar" → POST /v1/wa-numbers/{id}/reconnect (o QR modal).
+     - Estado de sesión con polling cada 5s si status != WORKING.
+     - Alerta visible cuando status = SCAN_QR_CODE con QR image.
+
+Reglas:
+- NO tocar src/ Python
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F15
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 

@@ -37,5 +37,7 @@ export function useToast() {
       addToast({ title, description, variant: "success" }),
     error: (title: string, description?: string) =>
       addToast({ title, description, variant: "destructive" }),
+    info: (title: string, description?: string) =>
+      addToast({ title, description, variant: "default" }),
   }
 }

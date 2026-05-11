@@ -1,5 +1,6 @@
 "use client"
 
+import { memo } from "react"
 import { formatDistanceToNow } from "@/lib/date"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
@@ -37,7 +38,7 @@ interface ConversationCardProps {
   onSelect?: (id: string, checked: boolean) => void
 }
 
-export function ConversationCard({ conv, isActive, onClick, selectionMode, selected, onSelect }: ConversationCardProps) {
+export const ConversationCard = memo(function ConversationCard({ conv, isActive, onClick, selectionMode, selected, onSelect }: ConversationCardProps) {
   return (
     <div
       className={cn(
@@ -109,4 +110,4 @@ export function ConversationCard({ conv, isActive, onClick, selectionMode, selec
       </button>
     </div>
   )
-}
+})

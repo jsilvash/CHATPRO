@@ -27,7 +27,7 @@ import {
   ChevronRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useToast } from "@/hooks/use-toast"
+import { GdprExport } from "@/components/GdprExport"
 import { useQuery } from "@tanstack/react-query"
 
 function MetricCard({
@@ -527,7 +527,13 @@ export default function DashboardPage() {
           : "Se actualiza automáticamente cada 30 segundos."}
       </p>
 
-      <ExportSection />
+      {/* GDPR export */}
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+          Datos y privacidad
+        </h2>
+        <GdprExport />
+      </div>
     </div>
   )
 }

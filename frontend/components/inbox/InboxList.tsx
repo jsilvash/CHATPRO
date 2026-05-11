@@ -1,13 +1,14 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useRouter, usePathname } from "next/navigation"
-import { Search, RefreshCw, SlidersHorizontal, Download, X, CheckSquare, Square, UserCheck, Tag, XCircle, AlertTriangle } from "lucide-react"
+import { Search, RefreshCw, SlidersHorizontal, Download, X, MessageSquare, CheckSquare, Square, UserCheck, Tag, XCircle, AlertTriangle } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { ConversationCard } from "./ConversationCard"
+import { EmptyState } from "@/components/EmptyState"
 import { apiGet, apiFetch, API_URL } from "@/lib/api"
 import type { ConversationListResponse, AvailableAgentsResponse, BulkActionResponse } from "@/lib/types"
 
@@ -40,7 +41,10 @@ export function InboxList() {
   const [showBulkAssign, setShowBulkAssign] = useState(false)
   const [bulkAssignUser, setBulkAssignUser] = useState("")
 
-  const hasAdvancedFilters = !!(dateFrom || dateTo || assignedUserId || onlyOverdue)
+  const hasAdvancedFilters = useMemo(
+    () => !!(dateFrom || dateTo || assignedUserId || onlyOverdue),
+    [dateFrom, dateTo, assignedUserId, onlyOverdue],
+  )
 
   const { data, isLoading, refetch } = useQuery<ConversationListResponse>({
     queryKey: ["inbox", statusFilter, search, page, dateFrom, dateTo, assignedUserId, onlyOverdue],
@@ -352,7 +356,15 @@ export function InboxList() {
         {isLoading ? (
           <div className="p-4 text-sm text-zinc-400 text-center">Cargando...</div>
         ) : !data?.items?.length ? (
-          <div className="p-4 text-sm text-zinc-400 text-center">Sin conversaciones</div>
+          <EmptyState
+            icon={MessageSquare}
+            title="Sin conversaciones"
+            description={
+              search || hasAdvancedFilters
+                ? "No hay conversaciones que coincidan con los filtros aplicados."
+                : "Aún no hay conversaciones en este inbox."
+            }
+          />
         ) : (
           data.items.map((conv) => (
             <ConversationCard

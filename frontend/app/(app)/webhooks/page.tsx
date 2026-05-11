@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { EmptyState } from "@/components/EmptyState"
 import { apiFetch, apiGet } from "@/lib/api"
 import { formatDateTime } from "@/lib/date"
 import type { WebhookOutItem } from "@/lib/types"
@@ -81,6 +82,7 @@ export default function WebhooksPage() {
       qc.invalidateQueries({ queryKey: ["webhooks"] })
       success(vars.enabled ? "Webhook activado" : "Webhook desactivado")
     },
+    onError: (e) => toastError("Error al actualizar", e instanceof Error ? e.message : undefined),
   })
 
   const deleteMut = useMutation({
@@ -222,10 +224,11 @@ export default function WebhooksPage() {
           Cargando...
         </div>
       ) : !hooks?.length ? (
-        <div className="text-center py-16 text-zinc-400 text-sm">
-          <Webhook className="w-8 h-8 mx-auto mb-3 opacity-30" />
-          <p>No hay webhooks configurados.</p>
-        </div>
+        <EmptyState
+          icon={Webhook}
+          title="Sin webhooks"
+          description="Configura un webhook para recibir notificaciones cuando ocurran eventos en ChatPro."
+        />
       ) : (
         <div className="space-y-3">
           {hooks.map((hook) => (
