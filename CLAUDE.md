@@ -56,6 +56,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
 | F11 | Frontend: Páginas de error + notificaciones browser + accesibilidad + gestión de sesión | ✅ PR abierto |
 | F12 | Frontend: Dark mode + responsive móvil + rendimiento + empty states | ✅ PR abierto |
+| F14 | Frontend: Settings + onboarding checklist + billing + wa-numbers QR/polling | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -306,54 +307,59 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Responsive móvil AppNav | `AppNav.tsx`: estado `mobileOpen`. Botón hamburger `<button fixed z-40>` visible solo en `<md` (hidden en `md:`). Overlay backdrop `<div fixed inset-0 bg-black/40>` cuando open. Nav con `fixed inset-y-0 left-0 w-64 -translate-x-full md:translate-x-0` en móvil vs `md:relative md:w-56` en desktop. `app/(app)/layout.tsx` añade `pt-12 md:pt-0` en `<main>` para el botón hamburger. | Fase F12 |
 | EmptyState reutilizable | `components/EmptyState.tsx`: props `icon` (LucideIcon), `title`, `description?`, `action?` (ReactNode). Círculo con icono + anillo dashed decorativo. Aplicado en: InboxList (sin convs), /contacts (sin resultados + búsqueda vacía), /knowledge (sin docs), /connectors (sin configs), /api-keys (sin keys), /webhooks (sin webhooks). | Fase F12 |
 | ConversationCard memoizado | `ConversationCard` envuelto en `React.memo` para evitar re-renders en actualizaciones de lista. `useMemo` para `hasAdvancedFilters` en InboxList. `prefetch` explícito en Links del nav. | Fase F12 |
+| Página /settings | `app/(app)/settings/page.tsx`: formulario nombre tenant (PATCH /v1/tenants/me). Info read-only: slug, plan (badge coloreado), estado, fecha. Danger zone con confirmación slug antes de eliminar. Feedback inline (éxito/error) sin toasts. | Fase F14 |
+| OnboardingChecklist | `components/OnboardingChecklist.tsx`: verifica 4 pasos vía Promise.allSettled (WA number, persona, connector, agent). Progreso visual (barra top + conteo). Colapsable + botón X para descartar. Descarte persistido en `localStorage["chatpro-onboarding-dismissed-{tenantId}"]`. Tenant ID obtenido decodificando el JWT de la cookie httpOnly con `decodeJwt(jose)` en cliente. Integrado en dashboard justo antes del header. | Fase F14 |
+| Página /billing | `app/(app)/billing/page.tsx`: resumen del mes (`GET /v1/metrics/summary`), cuotas con barras de progreso (`GET /v1/quotas`, warning 80% / crítico 95%), gráfico SVG de barras de mensajes por día sin deps externas (`GET /v1/metrics?from=&to=`), selector 7d/30d/mes, tabla detallada por día. | Fase F14 |
+| WA Numbers QR y polling | `/wa-numbers/[id]`: `QrModal` fetch GET /v1/wa-numbers/{id}/qr, auto-refresh cada 20s (los QR de WAHA expiran), cierra automáticamente al detectar status=WORKING. Polling del estado del número cada 5s cuando `NON_WORKING_STATUSES` (STARTING/SCAN_QR_CODE/FAILED/STOPPED). Alerta visual contextual: azul para SCAN_QR_CODE (botón "Ver QR"), rojo para FAILED/STOPPED (botón "Reconectar"). | Fase F14 |
+| Nav F14 | `AppNav.tsx` añade rutas: `/billing` (CreditCard icon), `/settings` (Settings icon). | Fase F14 |
 
 ---
 
-## Prompt de arranque — Fase F13 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F15 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F13 — Frontend: Toasts globales + Command palette + Exportación GDPR + Billing.
+Retomo Fase F15 — Frontend: Toasts globales + Command palette + Exportación GDPR.
 Contexto:
-- Fase F12 (dark mode + responsive móvil + rendimiento + empty states) completada. PR abierto en rama claude/fase-f12-frontend-qNYGX.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f13-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2-F12 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F12" y este prompt). Nada más.
+- Fase F14 (settings + onboarding checklist + billing + wa-numbers QR/polling) completada.
+  PR abierto en rama claude/fase-f14-frontend-skYco.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f15-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F14 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F14" y este prompt). Nada más.
 
-Estado tras Fase F12 (ya en rama claude/fase-f12-frontend-qNYGX):
-  A. Dark mode toggle: ThemeProvider (light/dark/system) + localStorage + clase .dark en <html>.
-     Toggle Sun/Moon/Monitor en footer de AppNav.
-  B. Responsive móvil: hamburger fijo en <md, sidebar overlay deslizable, pt-12 en main.
-  C. Rendimiento: ConversationCard en React.memo, useMemo en InboxList, prefetch en nav.
-  D. EmptyState: componente reutilizable aplicado en inbox, contacts, knowledge, connectors, api-keys, webhooks.
+Estado tras Fase F14 (ya en rama claude/fase-f14-frontend-skYco):
+  A. /settings: formulario nombre tenant + info read-only (slug/plan/estado/fecha) + danger zone.
+  B. OnboardingChecklist: widget en /dashboard, 4 pasos, barra progreso, descartable (localStorage).
+  C. /billing: gráfico SVG barras mensajes/día sin deps, cuotas con UsageBar (warning 80%/95%),
+     selector 7d/30d/mes, tabla detallada, resumen del mes.
+  D. /wa-numbers/[id]: QrModal (auto-refresh 20s), alertas contextuales SCAN_QR_CODE/FAILED/STOPPED,
+     polling estado cada 5s cuando no WORKING.
+  E. AppNav añade /billing (CreditCard) y /settings (Settings).
 
-Opciones a implementar en Fase F13 (en orden A → B → C → D):
+Opciones a implementar en Fase F15 (en orden A → B → C):
   A. Toast notifications globales:
-     - Implementación propia sin instalar paquetes: componente Toaster + hook useToast.
-     - Toast store con Zustand (ya instalado): lista de toasts con id, message, type (success/error/info).
-     - Toaster renderizado en app/(app)/layout.tsx. Auto-dismiss tras 4s.
-     - Añadir toasts en acciones CRUD de páginas: connectors, api-keys, webhooks, knowledge, canned-responses.
+     - hooks/use-toast.ts: Zustand store (ya instalado). Lista de toasts {id, message, type, duration}.
+       Auto-dismiss configurable (default 4s). Máx 4 toasts visibles.
+     - components/Toaster.tsx: componente fixed bottom-right. Animación slide-in/fade-out.
+       Tipo: success (verde), error (rojo), info (azul), warning (amarillo).
+     - Integrado en app/(app)/layout.tsx.
+     - Reemplazar mensajes inline de éxito/error en: connectors, api-keys, webhooks,
+       knowledge, canned-responses, settings.
 
   B. Command palette (Cmd+K / Ctrl+K):
-     - Componente CommandPalette modal (dialog de Radix ya disponible).
-     - Input debounced → busca en paralelo: contactos (GET /v1/contacts/search?q=) y convs (GET /v1/inbox?search=).
-     - Atajo de teclado en app/(app)/layout.tsx con useEffect + keydown.
-     - Navega al item seleccionado. Grupos: "Contactos" y "Conversaciones".
+     - components/CommandPalette.tsx: modal con overlay. Input debounced 300ms.
+     - Busca en paralelo: contactos (GET /v1/contacts/search?q=) y convs (GET /v1/inbox?search=&page_size=5).
+     - Grupos "Conversaciones" y "Contactos". Navegación ↑↓ + Enter. Esc para cerrar.
+     - Atajo de teclado en app/(app)/layout.tsx (useEffect + keydown, preventDefault en Cmd+K).
 
   C. Exportación GDPR desde el frontend:
-     - Botón "Exportar mis datos" en /users/[user_id] o /dashboard.
+     - Sección en /settings: botón "Exportar mis datos".
      - POST /v1/tenants/me/export → 202. Polling GET /v1/tenants/me/export/{id}/status cada 3s.
      - Cuando done: botón de descarga → GET /v1/tenants/me/export/{id}/download (URL firmada S3).
-     - Estados visuales: queued → processing → done/error con iconos.
-
-  D. Página de billing y uso:
-     - /billing: GET /v1/metrics/dashboard para consumo actual.
-     - GET /v1/billing/usage (si existe) o calcular desde dashboard.
-     - Barras de progreso de cuotas (messages, conversations, documents).
-     - Nav: AppNav añade /billing (CreditCard icon).
+     - Estados visuales: queued → processing → done/error con iconos y progress spinner.
 
 Reglas:
 - NO tocar src/ Python
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F14
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F16
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 
