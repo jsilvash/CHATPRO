@@ -16,6 +16,8 @@ import {
   Radio,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { OnboardingChecklist } from "@/components/OnboardingChecklist"
+import { decodeJwt } from "jose"
 
 function MetricCard({
   title,
@@ -101,12 +103,27 @@ function useMetricsSSE(onUpdate: (m: StreamMetrics) => void) {
 
 // ── Página ─────────────────────────────────────────────────────────────────────
 
+function getTenantIdFromCookie(): string | null {
+  if (typeof document === "undefined") return null
+  const cookies = document.cookie.split(";")
+  const accessCookie = cookies.find(c => c.trim().startsWith("chatpro_access="))
+  if (!accessCookie) return null
+  try {
+    const token = accessCookie.split("=").slice(1).join("=").trim()
+    const payload = decodeJwt(token) as { tenant_id?: string }
+    return payload.tenant_id ?? null
+  } catch {
+    return null
+  }
+}
+
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<TenantMetricsDashboard | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [sseOverlay, setSseOverlay] = useState<Partial<TenantMetricsDashboard>>({})
+  const [tenantId, setTenantId] = useState<string | null>(null)
 
   const fetchMetrics = useCallback(async () => {
     try {
@@ -137,6 +154,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchMetrics()
+    setTenantId(getTenantIdFromCookie())
   }, [fetchMetrics])
 
   // Polling fallback cada 30s si SSE no está conectado
@@ -153,6 +171,9 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-6xl">
+      {/* Onboarding checklist */}
+      {tenantId && <OnboardingChecklist tenantId={tenantId} />}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
