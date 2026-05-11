@@ -54,6 +54,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
+| F11 | Frontend: Páginas de error + notificaciones browser + accesibilidad + gestión de sesión | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -296,6 +297,58 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Menciones @usuario en notas (frontend) | `ConversationView.tsx`: textarea de notas detecta `@query` con regex, muestra autocomplete de agentes disponibles (GET /v1/users/available-agents). `insertMention()` reemplaza el texto antes del cursor. Dropdown posicionado absolutamente sobre el textarea. | Fase F8 |
 | Canned responses en reply (frontend) | `ReplyBox.tsx` acepta `onCannedToggle` + `showCannedActive`. Botón Zap (⚡) toggle muestra picker encima de la caja. Picker: input de búsqueda + lista filtrable de canned responses (GET /v1/canned-responses). Click inserta y envía directamente. | Fase F8 |
 | Nav F8 | `AppNav.tsx` añade rutas: `/knowledge` (BookOpen icon), `/api-keys` (Key icon), `/webhooks` (Webhook icon). | Fase F8 |
+| Páginas de error personalizadas | `app/not-found.tsx`: 404 con links a /dashboard e /inbox. `app/error.tsx`: boundary de error con botón "Reintentar" (reset) + digest. `app/(app)/loading.tsx`: skeleton animado (cards + filas de tabla) con `role="status"` y `aria-label`. | Fase F11 |
+| Notificaciones de browser | `use-notifications.ts`: `sendBrowserNotification()` para `conversation.waiting_agent` — solo cuando `document.visibilityState !== "visible"` y permiso granted. `requestNotificationPermission()` exportada. `NotificationPermissionRequester`: cliente que pide permiso tras 3s de mount, integrado en `app/(app)/layout.tsx`. | Fase F11 |
+| Accesibilidad | `SkipToContent`: link oculto (`sr-only`) con `focus:not-sr-only` que salta a `#main-content`. Añadido en root layout. `main#main-content` con `tabIndex={-1}` en app layout. Badge de inbox envuelto en `<span aria-live="polite" aria-label="...">` en AppNav. | Fase F11 |
+| Gestión de sesión | `use-session-expiry.ts`: hook que compara `tokenExp` (Unix) con `Date.now()` cada 10s. Retorna `status: "ok" | "expiring_soon" | "expired"` y `secondsLeft`. `SessionExpiryBanner`: banner amber cuando quedan <5min (botón "Extender sesión" → `POST /api/auth/refresh`), banner rojo al expirar (link logout). Integrado en app layout entre AppNav y main. | Fase F11 |
+
+---
+
+## Prompt de arranque — Fase F12 (siguiente prioridad frontend)
+
+```
+Retomo Fase F12 — Frontend: Toasts + Command palette + Exportación GDPR + Billing.
+Contexto:
+- Fase F11 (páginas de error + notificaciones browser + accesibilidad + gestión de sesión) completada. PR abierto en rama claude/fase-f11-frontend-RQwTL.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f12-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F8 + F11 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F11" y este prompt). Nada más.
+
+Estado tras Fase F11 (ya en rama claude/fase-f11-frontend-RQwTL):
+  A. app/not-found.tsx: 404 con links a /dashboard e /inbox.
+  B. app/error.tsx: boundary de error con "Reintentar" + digest.
+  C. app/(app)/loading.tsx: skeleton animado accesible.
+  D. Notificaciones browser: use-notifications + NotificationPermissionRequester.
+  E. Accesibilidad: SkipToContent, #main-content, aria-live en badge inbox.
+  F. SessionExpiryBanner: alerta amber/rojo según tiempo de expiración del token.
+
+Opciones a implementar en Fase F12 (en orden A → B → C → D):
+  A. Toast notifications globales:
+     - Instalar o crear un sistema de toasts (sonner o implementación propia).
+     - Wrap en Providers. Hook useToast disponible en todo el app.
+     - Añadir toasts en acciones CRUD de todas las páginas existentes (crear/eliminar/error).
+
+  B. Command palette (Cmd+K):
+     - Componente CommandPalette modal con input de búsqueda.
+     - Busca contactos (GET /v1/contacts/search?q=) y conversaciones (GET /v1/inbox?search=).
+     - Atajo Cmd+K (Mac) / Ctrl+K (Windows/Linux) en root layout.
+     - Navega al item seleccionado.
+
+  C. Exportación GDPR desde el frontend:
+     - Botón "Exportar mis datos" en /dashboard o en /users/[user_id].
+     - POST /v1/tenants/me/export → polling GET status → botón de descarga (URL S3 firmada).
+     - Estados visuales: queued → processing → done/error.
+
+  D. Página de billing y uso:
+     - /billing: consumo actual (messages, conversations, LLM cost) via GET /v1/metrics/dashboard.
+     - Cuotas del plan y porcentaje de uso con barras de progreso.
+     - Nav: AppNav añade /billing (CreditCard icon).
+
+Reglas:
+- NO tocar src/ Python
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F13
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 
