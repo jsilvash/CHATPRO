@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap } from "lucide-react"
+import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
@@ -20,6 +20,8 @@ const navItems = [
   { href: "/sla", label: "SLA", icon: BarChart2 },
   { href: "/connectors", label: "Conectores", icon: Plug },
   { href: "/canned-responses", label: "Respuestas rápidas", icon: Zap },
+  { href: "/wa-numbers", label: "Números WA", icon: Smartphone },
+  { href: "/personas", label: "Personas IA", icon: Bot },
 ]
 
 export function AppNav({ session }: AppNavProps) {

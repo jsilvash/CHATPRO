@@ -49,7 +49,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
 | F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
 | F3 | Frontend: Dashboard operativo + gestión usuarios + contactos + SLA | ✅ PR abierto |
-| F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ PR abierto |
+| F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ Mergeada a main |
+| F5 | Frontend: Números WA + personas IA + filtros inbox avanzados | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -270,6 +271,58 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Canned responses | `app/(app)/canned-responses/page.tsx`: lista con búsqueda debounced 350ms. CannedForm inline para create/edit. PreviewModal con render de variables. Acciones por item: preview, editar, eliminar. Detección de variables `{{nombre}}` en textarea con chips inline. | Fase F4 |
 | Dashboard SSE | `useMetricsSSE` hook en dashboard/page.tsx: EventSource a `/v1/metrics/stream?token=<jwt>`. Token obtenido de `/api/auth/ws-token`. onError: reconexión tras 10s. Actualiza `messages_in_today`, `messages_out_today`, `conversations_active` via overlay. Polling fallback cada 30s si SSE no conectado. Badge "En vivo" con `Radio` icon cuando SSE activo. | Fase F4 |
 | Nav F4 | `AppNav.tsx` añade rutas: `/connectors` (Plug icon), `/canned-responses` (Zap icon). | Fase F4 |
+| Panel números WA | `app/(app)/wa-numbers/page.tsx`: lista de WaNumbers con session_status badge (WORKING/STARTING/SCAN_QR_CODE/FAILED/STOPPED). Click navega a detalle. `app/(app)/wa-numbers/[id]/page.tsx`: card con label + phone + status. Filtro de fechas (date_from/date_to) aplicado on-demand. Métricas: messages_in/out, conversations_total/active, top_contacts. | Fase F5 |
+| Personas IA | `app/(app)/personas/page.tsx`: lista + CRUD completo en modal (create/edit). Campos: name, system_prompt, tone (select), locale, locale_secondary (coma-separado), auto_detect_locale (checkbox), timezone, model_id (select). POST /v1/personas + PATCH /v1/personas/{id} + DELETE. | Fase F5 |
+| Filtros avanzados inbox | `InboxList.tsx` añade panel colapsable (toggle SlidersHorizontal icon): assigned_user_id (select via /v1/users/available-agents), date_from, date_to. Botón export CSV (Download icon) que descarga GET /v1/inbox/export con filtros actuales como blob. Botón búsqueda full-text (Search icon) navega a `/inbox/search`. | Fase F5 |
+| Búsqueda full-text inbox | `app/(app)/inbox/search/page.tsx`: input + botón buscar. GET /v1/inbox/search?q=. Muestra resultados con highlighting de palabras clave, contexto ±2 mensajes (context_before/context_after). Click en resultado navega a la conversación. | Fase F5 |
+| Nav F5 | `AppNav.tsx` añade rutas: `/wa-numbers` (Smartphone icon), `/personas` (Bot icon). | Fase F5 |
+
+---
+
+## Prompt de arranque — Fase F6 (siguiente prioridad frontend)
+
+```
+Retomo Fase F6 — Frontend: Office hours + asignación persona a número WA + métricas agente + mejoras UX.
+Contexto:
+- Fase F5 (números WA + personas IA + filtros inbox avanzados) completada. PR abierto en rama claude/fase-f5-frontend-QbzuZ.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f6-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2/F3/F4/F5 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (sección "Decisiones F5" y este prompt). Nada más.
+
+Estado tras Fase F5 (ya en main):
+  A. Panel números WA: /wa-numbers (lista con session_status badge) y /wa-numbers/[id] (métricas con filtro fecha + top contacts).
+  B. Personas IA: /personas CRUD completo en modal (name, system_prompt, tone, locale, locale_secondary, auto_detect_locale, timezone, model_id).
+  C. Filtros avanzados inbox: InboxList con panel colapsable (assigned_user, date_from, date_to) + export CSV + botón búsqueda.
+  D. Búsqueda full-text inbox: /inbox/search (GET /v1/inbox/search?q=) con highlighting + contexto ±2 mensajes.
+  E. Nav: AppNav añade /wa-numbers (Smartphone) y /personas (Bot).
+
+Opciones a implementar en Fase F6 (en orden A → B → C → D):
+  A. Asignación de persona a número WA:
+     - En /wa-numbers/[id]: selector de persona + botón PATCH /v1/wa-numbers/{id}/persona.
+     - Muestra persona actual asignada.
+     - Requiere: GET /v1/personas (lista) y GET /v1/wa-numbers/{id} (ya tiene persona_id si el backend lo expone).
+
+  B. Office hours (requiere Fase 29 backend mergeada con /v1/office-hours):
+     - /office-hours: CRUD con selección de número WA + día de semana + hora inicio/fin.
+     - Mostrar qué horarios están activos/inactivos.
+     - Si Fase 29 no está mergeada, skipear esta opción.
+
+  C. Métricas de agente con período:
+     - En /users/[user_id]: añadir sección métricas con filtro de fechas.
+     - GET /v1/users/{id}/metrics?date_from=&date_to= (si existe en backend).
+     - Campos: conversations_handled, avg_first_response_sec, avg_resolution_sec, messages_sent, notes_created.
+
+  D. Mejoras UX inbox:
+     - Notas internas en ConversationView: mostrar lista de notas, form para crear, botón eliminar.
+     - Historial de status en conversación: GET /v1/inbox/{id}/status-history.
+     - Tags en ConversationView: chips editables (ya hay API POST/DELETE /v1/inbox/{id}/tags).
+
+Reglas:
+- NO tocar src/ Python
+- Arrancar dev server y probar manualmente antes de reportar listo
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F7
+- Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
+```
 
 ---
 
