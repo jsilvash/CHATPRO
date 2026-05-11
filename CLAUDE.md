@@ -318,47 +318,50 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 ## Prompt de arranque — Fase F15 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F15 — Frontend: Toasts globales + Command palette + Exportación GDPR.
+Retomo Fase F15 — Frontend: Audit log + entregas de webhooks + test de persona + métricas conector.
 Contexto:
 - Fase F14 (settings + onboarding checklist + billing + wa-numbers QR/polling) completada.
   PR abierto en rama claude/fase-f14-frontend-skYco.
+- Fase F13 (toasts globales + command palette + GDPR export + billing básico) en PR abierto
+  en rama claude/fase-f13-frontend-dle8H — NO re-implementar esas features.
 - Rama nueva: git fetch origin main && git checkout -b claude/fase-f15-frontend-XXXXX origin/main
 - Main contiene backend Fases 0-29 + frontend F2-F14 en Next.js 16 + shadcn/ui.
 - Primero: leer SOLO CLAUDE.md (secciones "Decisiones F14" y este prompt). Nada más.
 
 Estado tras Fase F14 (ya en rama claude/fase-f14-frontend-skYco):
-  A. /settings: formulario nombre tenant + info read-only (slug/plan/estado/fecha) + danger zone.
-  B. OnboardingChecklist: widget en /dashboard, 4 pasos, barra progreso, descartable (localStorage).
-  C. /billing: gráfico SVG barras mensajes/día sin deps, cuotas con UsageBar (warning 80%/95%),
-     selector 7d/30d/mes, tabla detallada, resumen del mes.
-  D. /wa-numbers/[id]: QrModal (auto-refresh 20s), alertas contextuales SCAN_QR_CODE/FAILED/STOPPED,
-     polling estado cada 5s cuando no WORKING.
-  E. AppNav añade /billing (CreditCard) y /settings (Settings).
+  A. /settings: formulario nombre tenant + info read-only + danger zone con confirmación slug.
+  B. OnboardingChecklist: widget en /dashboard (4 pasos, barra progreso, descartable).
+  C. /billing: resumen mes + cuotas UsageBar + gráfico SVG barras + tabla diaria + selector período.
+  D. /wa-numbers/[id]: QrModal auto-refresh 20s + alertas contextuales + polling 5s no-WORKING.
+  E. AppNav añade /billing y /settings.
 
-Opciones a implementar en Fase F15 (en orden A → B → C):
-  A. Toast notifications globales:
-     - hooks/use-toast.ts: Zustand store (ya instalado). Lista de toasts {id, message, type, duration}.
-       Auto-dismiss configurable (default 4s). Máx 4 toasts visibles.
-     - components/Toaster.tsx: componente fixed bottom-right. Animación slide-in/fade-out.
-       Tipo: success (verde), error (rojo), info (azul), warning (amarillo).
-     - Integrado en app/(app)/layout.tsx.
-     - Reemplazar mensajes inline de éxito/error en: connectors, api-keys, webhooks,
-       knowledge, canned-responses, settings.
+Opciones a implementar en Fase F15 (en orden A → B → C → D):
+  A. Historial de auditoría (/audit-log):
+     - Nueva página app/(app)/audit-log/page.tsx.
+     - GET /v1/audit-log con filtros date_from, date_to, event_type, paginación.
+     - Tabla: timestamp, event_type, user_email, resource_id, changes (colapsable).
+     - Nav: AppNav añade /audit-log (ClipboardList icon).
 
-  B. Command palette (Cmd+K / Ctrl+K):
-     - components/CommandPalette.tsx: modal con overlay. Input debounced 300ms.
-     - Busca en paralelo: contactos (GET /v1/contacts/search?q=) y convs (GET /v1/inbox?search=&page_size=5).
-     - Grupos "Conversaciones" y "Contactos". Navegación ↑↓ + Enter. Esc para cerrar.
-     - Atajo de teclado en app/(app)/layout.tsx (useEffect + keydown, preventDefault en Cmd+K).
+  B. Entregas de webhooks salientes:
+     - En /webhooks/[id]: tab "Entregas" que carga GET /v1/webhooks/{id}/deliveries.
+     - Tabla: timestamp, event, status_code, duration_ms, success/fail badge.
+     - Modal con request/response body completo al hacer click.
 
-  C. Exportación GDPR desde el frontend:
-     - Sección en /settings: botón "Exportar mis datos".
-     - POST /v1/tenants/me/export → 202. Polling GET /v1/tenants/me/export/{id}/status cada 3s.
-     - Cuando done: botón de descarga → GET /v1/tenants/me/export/{id}/download (URL firmada S3).
-     - Estados visuales: queued → processing → done/error con iconos y progress spinner.
+  C. Test de persona IA:
+     - En /personas (o /personas/[id]): sección "Probar persona".
+     - Input de mensaje + botón enviar → POST /v1/personas/{id}/test (si existe) o simulación.
+     - Muestra respuesta del bot con el system prompt de esa persona.
+     - Si el endpoint de test no existe, mostrar el system_prompt completo con syntax highlighting.
+
+  D. Métricas de conector mejoradas:
+     - En /connectors/[id] tab Estadísticas: añadir gráfico SVG de órdenes por día
+       (reutilizar patrón del BarChart de /billing).
+     - GET /v1/connector-configs/{id}/stats ya devuelve products_count y orders_count.
+     - Mostrar últimas 5 entregas de webhook del conector si existen.
 
 Reglas:
 - NO tocar src/ Python
+- NO re-implementar toasts, command palette ni GDPR export (ya están en F13)
 - Commit + push + PR + actualizar CLAUDE.md + generar prompt F16
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
