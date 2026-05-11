@@ -232,6 +232,79 @@ export interface RenderOut {
   variables_missing: string[]
 }
 
+// WA Numbers
+export interface WaNumberResponse {
+  id: string
+  tenant_id: string
+  label: string
+  waha_session_name: string
+  waha_node_id: string | null
+  phone: string | null
+  tags: string[]
+  is_default: boolean
+  active: boolean
+  created_at: string
+  session_status: string
+}
+
+export interface WaNumberListResponse {
+  items: WaNumberResponse[]
+  total: number
+}
+
+export interface TopContactEntry {
+  phone: string
+  count: number
+}
+
+export interface WaNumberMetricsOut {
+  wa_number_id: string
+  date_from: string
+  date_to: string
+  messages_in: number
+  messages_out: number
+  conversations_total: number
+  conversations_active: number
+  top_contacts: TopContactEntry[]
+}
+
+// Personas
+export interface PersonaResponse {
+  id: string
+  tenant_id: string
+  name: string
+  system_prompt: string
+  tone: string
+  locale: string
+  timezone: string
+  out_of_hours_message: string
+  business_hours_json: Record<string, unknown>
+  model_id: string
+  locale_secondary: string[]
+  auto_detect_locale: boolean
+}
+
+export interface PersonaListResponse {
+  items: PersonaResponse[]
+  total: number
+}
+
+// Inbox search
+export interface MessageSearchResult {
+  id: string
+  conversation_id: string
+  direction: "in" | "out"
+  text: string
+  created_at: string
+  context_before: { id: string; direction: string; text: string; created_at: string }[]
+  context_after: { id: string; direction: string; text: string; created_at: string }[]
+}
+
+export interface SearchResponse {
+  items: MessageSearchResult[]
+  total: number
+}
+
 // Métricas SSE
 export interface StreamMetrics {
   messages_in_today: number

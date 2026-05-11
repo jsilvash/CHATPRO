@@ -499,6 +499,7 @@ def _auto_escalate_if_needed(
     from src.inbox.models import HandoffEvent
 
     conversation.status = "waiting_agent"
+    conversation.waiting_since = datetime.now(UTC)  # Fase 29B
     db.add(conversation)
 
     evento = HandoffEvent(
@@ -608,6 +609,19 @@ def respond(db: Session, conversation: WaConversation, inbound_msg: WaMessage) -
             wn = db.query(WaNumber).filter(WaNumber.id == conversation.wa_number_id).first()
         if wn is None:
             return
+
+        # Verificar office hours (Fase 29A): si hay registros configurados, toman precedencia.
+        try:
+            from src.office_hours.service import check_office_hours
+            within_hours, ooh_msg = check_office_hours(
+                db, conversation.tenant_id, wn.id
+            )
+            if not within_hours:
+                if ooh_msg:
+                    _persist_outbound(db, conversation, wn, ooh_msg)
+                return
+        except Exception:
+            pass  # No interrumpir el flujo si falla el chequeo de office hours
 
         if not is_within_business_hours(persona):
             if persona.out_of_hours_message:

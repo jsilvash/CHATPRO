@@ -8,6 +8,7 @@ from src.contacts import api as contacts_api
 from src.inbox import api as inbox_api
 from src.inbox import canned_api
 from src.knowledge import api as knowledge_api
+from src.office_hours import api as office_hours_api
 from src.public_api import api_keys as api_keys_api
 from src.public_api import webhooks_api
 from src.wa import api as wa_api
@@ -29,3 +30,4 @@ router.include_router(api_keys_api.router)
 router.include_router(webhooks_api.router)
 router.include_router(billing_api.router)
 router.include_router(metrics_dashboard.router)
+router.include_router(office_hours_api.router)

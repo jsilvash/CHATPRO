@@ -23,6 +23,7 @@ Endpoints:
 from __future__ import annotations
 
 import math
+import re
 import uuid
 from datetime import UTC, date, datetime, timezone
 
@@ -77,6 +78,8 @@ class ConversationSummary(BaseModel):
     ai_summary: str | None = None
     first_response_at: datetime | None = None
     resolved_at: datetime | None = None
+    waiting_since: datetime | None = None  # Fase 29B
+    waiting_minutes: int | None = None     # Fase 29B — minutos en waiting_agent desde waiting_since
     tags: list[str] = []
     notes_count: int = 0
     created_at: datetime
@@ -191,6 +194,7 @@ class NoteOut(BaseModel):
     wa_conversation_id: uuid.UUID
     user_id: uuid.UUID
     text: str
+    mentions: list[uuid.UUID] = []  # Fase 29C: IDs de usuarios mencionados
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -267,6 +271,13 @@ def _conv_summary(
     tags: list[str],
     notes_count: int = 0,
 ) -> ConversationSummary:
+    # Calcular waiting_minutes si la conversación está en waiting_agent con waiting_since.
+    waiting_since = getattr(conv, "waiting_since", None)
+    waiting_minutes: int | None = None
+    if conv.status == "waiting_agent" and waiting_since is not None:
+        delta = datetime.now(UTC) - waiting_since.replace(tzinfo=UTC) if waiting_since.tzinfo is None else datetime.now(UTC) - waiting_since
+        waiting_minutes = max(0, int(delta.total_seconds() / 60))
+
     return ConversationSummary(
         id=conv.id,
         tenant_id=conv.tenant_id,
@@ -280,6 +291,8 @@ def _conv_summary(
         ai_summary=conv.ai_summary,
         first_response_at=conv.first_response_at,
         resolved_at=conv.resolved_at,
+        waiting_since=waiting_since,
+        waiting_minutes=waiting_minutes,
         tags=sorted(tags),
         notes_count=notes_count,
         created_at=conv.created_at,
@@ -515,6 +528,7 @@ def list_inbox(
     date_from: date | None = Query(None, description="Fecha de inicio (ISO8601, filtra por created_at)"),
     date_to: date | None = Query(None, description="Fecha de fin (ISO8601, filtra por created_at)"),
     search: str | None = Query(None, description="Búsqueda por nombre o teléfono del contacto"),
+    sort: str | None = Query(None, description="Ordenar por: waiting_time (Fase 29B)"),
     page: int = Query(1, ge=1, description="Página (empieza en 1)"),
     page_size: int = Query(50, ge=1, le=200, description="Resultados por página"),
     current_user: User = Depends(get_current_user),
@@ -567,7 +581,10 @@ def list_inbox(
                 | WaConversation.wa_contact_phone.ilike(like)
             )
 
-        q = q.order_by(WaConversation.last_message_at.desc().nullslast())
+        if sort == "waiting_time":
+            q = q.order_by(WaConversation.waiting_since.asc().nullslast())
+        else:
+            q = q.order_by(WaConversation.last_message_at.desc().nullslast())
         total = q.count()
         offset = (page - 1) * page_size
         items = q.offset(offset).limit(page_size).all()
@@ -836,6 +853,51 @@ def export_inbox_csv(
     )
 
 
+@router.get("/overdue", response_model=ConversationListResponse)
+def list_overdue(
+    threshold_minutes: int = Query(30, ge=1, description="Umbral en minutos para considerar una conv en espera como vencida"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ConversationListResponse:
+    """Lista conversaciones en waiting_agent cuyo tiempo de espera supera el umbral.
+
+    Ordenadas por waiting_since ASC (más antigua primero).
+    """
+    from datetime import timedelta
+
+    tenant_id = get_current_tenant_id()
+    threshold_dt = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+
+    with bypass_tenant_filter():
+        q = (
+            db.query(WaConversation)
+            .filter(
+                WaConversation.tenant_id == tenant_id,
+                WaConversation.status == "waiting_agent",
+                WaConversation.waiting_since.isnot(None),
+                WaConversation.waiting_since <= threshold_dt,
+            )
+            .order_by(WaConversation.waiting_since.asc())
+        )
+        total = q.count()
+        items = q.all()
+
+    conv_ids = [c.id for c in items]
+    tags_map = _load_tags(conv_ids, tenant_id, db)
+    notes_count_map = _load_notes_count(conv_ids, tenant_id, db)
+    summaries = [
+        _conv_summary(c, tags_map.get(c.id, []), notes_count_map.get(c.id, 0))
+        for c in items
+    ]
+    return ConversationListResponse(
+        items=summaries,
+        total=total,
+        page=1,
+        page_size=total or 50,
+        total_pages=1,
+    )
+
+
 @router.get("/{conversation_id}", response_model=ConversationDetail)
 def get_conversation(
     conversation_id: uuid.UUID,
@@ -920,6 +982,7 @@ def take_conversation(
     old_status = conv.status
     conv.status = "agent"
     conv.assigned_user_id = current_user.id
+    conv.waiting_since = None  # Fase 29B: limpiar al pasar a agent
     db.add(conv)
 
     # Historial de status (Fase 26C).
@@ -1011,6 +1074,7 @@ def reply_conversation(
         _record_status_change(db, tenant_id, conversation_id, "waiting_agent", "agent", current_user.id)
         conv.status = "agent"
         conv.assigned_user_id = current_user.id
+        conv.waiting_since = None  # Fase 29B: limpiar al pasar a agent
         db.add(conv)
         handoff = _get_open_handoff(conversation_id, tenant_id, db)
         if handoff and handoff.agent_user_id is None:
@@ -1254,6 +1318,41 @@ def remove_tag(
 
 # ── Notas internas (Fase 26B) ─────────────────────────────────────────────────
 
+# Patrón para menciones: @email o @nombre_sin_espacios
+_MENTION_PATTERN = re.compile(r"@([\w.+-]+(?:@[\w.-]+)?)")
+
+
+def _resolve_mentions(
+    text: str,
+    tenant_id: uuid.UUID,
+    db: Session,
+) -> list[uuid.UUID]:
+    """Parsea @email o @nombre en el texto y retorna IDs de usuarios del tenant encontrados."""
+    tokens = _MENTION_PATTERN.findall(text)
+    if not tokens:
+        return []
+
+    mentioned_ids: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+
+    with bypass_tenant_filter():
+        for token in tokens:
+            # Buscar por email exacto o por nombre (case-insensitive).
+            user = (
+                db.query(User)
+                .filter(
+                    User.tenant_id == tenant_id,
+                    User.is_active.is_(True),
+                    (User.email == token) | (User.full_name.ilike(token)),
+                )
+                .first()
+            )
+            if user is not None and user.id not in seen:
+                mentioned_ids.append(user.id)
+                seen.add(user.id)
+
+    return mentioned_ids
+
 
 def _record_status_change(
     db: Session,
@@ -1289,11 +1388,17 @@ def create_note(
     if not body.text or not body.text.strip():
         raise HTTPException(status_code=422, detail="text no puede estar vacío")
 
+    note_text = body.text.strip()
+
+    # Parsear menciones (Fase 29C).
+    mention_ids = _resolve_mentions(note_text, tenant_id, db)
+
     note = ConversationNote(
         tenant_id=tenant_id,
         wa_conversation_id=conversation_id,
         user_id=current_user.id,
-        text=body.text.strip(),
+        text=note_text,
+        mentions=[str(uid) for uid in mention_ids],
     )
     db.add(note)
     db.commit()
@@ -1319,7 +1424,35 @@ def create_note(
     except Exception:
         pass
 
-    return NoteOut.model_validate(note)
+    # Notificar a usuarios mencionados vía WS (Fase 29C) — fire-and-forget.
+    if mention_ids:
+        try:
+            from src.messaging.ws_manager import notification_manager
+            for mentioned_uid in mention_ids:
+                notification_manager.broadcast_from_sync(
+                    tenant_id,
+                    {
+                        "event": "note.mention",
+                        "note_id": str(note.id),
+                        "conversation_id": str(conversation_id),
+                        "mentioned_user_id": str(mentioned_uid),
+                        "author_user_id": str(current_user.id),
+                        "text_preview": note.text[:100],
+                        "tenant_id": str(tenant_id),
+                    },
+                )
+        except Exception:
+            pass
+
+    return NoteOut(
+        id=note.id,
+        tenant_id=note.tenant_id,
+        wa_conversation_id=note.wa_conversation_id,
+        user_id=note.user_id,
+        text=note.text,
+        mentions=mention_ids,
+        created_at=note.created_at,
+    )
 
 
 @router.get("/{conversation_id}/notes", response_model=list[NoteOut])
@@ -1342,7 +1475,18 @@ def list_notes(
             .order_by(ConversationNote.created_at.asc())
             .all()
         )
-    return [NoteOut.model_validate(n) for n in notes]
+    return [
+        NoteOut(
+            id=n.id,
+            tenant_id=n.tenant_id,
+            wa_conversation_id=n.wa_conversation_id,
+            user_id=n.user_id,
+            text=n.text,
+            mentions=[uuid.UUID(m) for m in (n.mentions or [])],
+            created_at=n.created_at,
+        )
+        for n in notes
+    ]
 
 
 @router.delete("/{conversation_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
