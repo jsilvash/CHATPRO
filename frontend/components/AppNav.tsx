@@ -64,10 +64,18 @@ export function AppNav({ session }: AppNavProps) {
             >
               <Icon className="w-4 h-4 shrink-0" />
               <span className="flex-1">{label}</span>
-              {href === "/inbox" && waitingCount > 0 && (
-                <Badge variant="warning" className="text-xs px-1.5 py-0">
-                  {waitingCount}
-                </Badge>
+              {href === "/inbox" && (
+                <span
+                  aria-live="polite"
+                  aria-atomic="true"
+                  aria-label={waitingCount > 0 ? `${waitingCount} conversaciones esperando` : undefined}
+                >
+                  {waitingCount > 0 && (
+                    <Badge variant="warning" className="text-xs px-1.5 py-0" aria-hidden="true">
+                      {waitingCount}
+                    </Badge>
+                  )}
+                </span>
               )}
             </Link>
           )

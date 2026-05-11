@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
+import { SkipToContent } from "@/components/SkipToContent";
 
 export const metadata: Metadata = {
   title: "ChatPro",
@@ -15,6 +16,7 @@ export default function RootLayout({
   return (
     <html lang="es" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
+        <SkipToContent />
         <Providers>{children}</Providers>
       </body>
     </html>
