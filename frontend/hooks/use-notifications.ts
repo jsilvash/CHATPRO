@@ -11,6 +11,30 @@ export interface NotificationEvent {
   timestamp: string
 }
 
+function sendBrowserNotification(title: string, body: string, conversationId: string) {
+  if (typeof window === "undefined") return
+  if (document.visibilityState === "visible") return
+  if (Notification.permission !== "granted") return
+
+  const n = new Notification(title, {
+    body,
+    icon: "/favicon.ico",
+    tag: `conv-${conversationId}`,
+  })
+
+  n.onclick = () => {
+    window.focus()
+    window.location.href = `/inbox/${conversationId}`
+  }
+}
+
+export async function requestNotificationPermission(): Promise<NotificationPermission> {
+  if (typeof window === "undefined" || !("Notification" in window)) return "denied"
+  if (Notification.permission === "granted") return "granted"
+  if (Notification.permission === "denied") return "denied"
+  return Notification.requestPermission()
+}
+
 export function useNotifications() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -23,7 +47,6 @@ export function useNotifications() {
       if (!res.ok) return
       const { token } = await res.json()
 
-      // Extraer tenant_id del token JWT
       const payload = decodeJwt(token) as { tenant_id?: string }
       const tenantId = payload.tenant_id
       if (!tenantId) return
@@ -41,6 +64,11 @@ export function useNotifications() {
           setLastEvent(data)
           if (data.event === "conversation.waiting_agent") {
             setWaitingCount((prev) => prev + 1)
+            sendBrowserNotification(
+              "Nueva conversación en espera",
+              `${data.wa_contact_phone} está esperando atención`,
+              data.conversation_id,
+            )
           }
         } catch {
           // ignore
