@@ -16,6 +16,7 @@ import {
   Radio,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { GdprExport } from "@/components/GdprExport"
 
 function MetricCard({
   title,
@@ -294,6 +295,14 @@ export default function DashboardPage() {
           ? "Métricas de mensajes y conversaciones activas actualizadas en tiempo real via SSE."
           : "Se actualiza automáticamente cada 30 segundos."}
       </p>
+
+      {/* GDPR export */}
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
+          Datos y privacidad
+        </h2>
+        <GdprExport />
+      </div>
     </div>
   )
 }

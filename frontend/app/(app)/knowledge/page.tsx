@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { EmptyState } from "@/components/EmptyState"
 import { apiFetch, apiGet, API_URL } from "@/lib/api"
 import type { KbDocumentOut } from "@/lib/types"
+import { useToast } from "@/hooks/use-toast"
 
 const STATUS_LABEL: Record<string, string> = {
   ready: "Listo",
@@ -29,6 +30,7 @@ type UploadMode = "pdf" | "url" | null
 
 export default function KnowledgePage() {
   const qc = useQueryClient()
+  const { success, error: toastError } = useToast()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<UploadMode>(null)
   const [title, setTitle] = useState("")
@@ -50,7 +52,9 @@ export default function KnowledgePage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["knowledge-docs"] })
       setDeleteConfirm(null)
+      success("Documento eliminado")
     },
+    onError: (e) => toastError(e instanceof Error ? e.message : "Error al eliminar"),
   })
 
   async function handleUpload() {
@@ -95,6 +99,7 @@ export default function KnowledgePage() {
       setTitle("")
       setUrl("")
       setFile(null)
+      success("Documento añadido — procesando…")
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Error al subir documento")
     } finally {

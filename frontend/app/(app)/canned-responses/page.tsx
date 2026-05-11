@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react"
 import { apiFetch, apiGet } from "@/lib/api"
 import type { CannedResponseOut, CannedResponseListOut, RenderOut } from "@/lib/types"
+import { useToast } from "@/hooks/use-toast"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -216,6 +217,7 @@ function PreviewModal({ item, onClose }: PreviewModalProps) {
 // ── Página principal ──────────────────────────────────────────────────────────
 
 export default function CannedResponsesPage() {
+  const { success, error: toastError } = useToast()
   const [items, setItems] = useState<CannedResponseOut[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -275,6 +277,7 @@ export default function CannedResponsesPage() {
     })
     setShowForm(false)
     setEditing(null)
+    success(editing ? "Template actualizado" : "Template creado")
   }
 
   async function handleDelete(id: string) {
@@ -283,10 +286,9 @@ export default function CannedResponsesPage() {
     try {
       await apiFetch(`/v1/canned-responses/${id}`, { method: "DELETE" })
       setItems(prev => prev.filter(i => i.id !== id))
-      setDeleteSuccess(id)
-      setTimeout(() => setDeleteSuccess(null), 2000)
+      success("Template eliminado")
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Error al eliminar")
+      toastError(e instanceof Error ? e.message : "Error al eliminar")
     } finally {
       setDeleting(null)
     }

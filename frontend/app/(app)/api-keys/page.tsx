@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/EmptyState"
 import { apiFetch, apiGet } from "@/lib/api"
 import { formatDateTime } from "@/lib/date"
 import type { ApiKeyOut } from "@/lib/types"
+import { useToast } from "@/hooks/use-toast"
 
 interface ApiKeyCreated extends ApiKeyOut {
   token: string
@@ -24,6 +25,7 @@ const SCOPE_LABELS: Record<string, string> = {
 
 export default function ApiKeysPage() {
   const qc = useQueryClient()
+  const { success, error: toastError } = useToast()
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState("")
   const [scopes, setScopes] = useState<string[]>(["read"])
@@ -51,6 +53,7 @@ export default function ApiKeysPage() {
       setName("")
       setScopes(["read"])
       setError(null)
+      success("API key creada — copia el token ahora")
     },
     onError: (e) => setError(e instanceof Error ? e.message : "Error al crear API key"),
   })
@@ -61,7 +64,9 @@ export default function ApiKeysPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["api-keys"] })
       setDeleteConfirm(null)
+      success("API key revocada")
     },
+    onError: (e) => toastError(e instanceof Error ? e.message : "Error al revocar"),
   })
 
   async function copyToken() {

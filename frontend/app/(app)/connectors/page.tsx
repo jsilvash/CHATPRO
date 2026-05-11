@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
+import { useToast } from "@/hooks/use-toast"
 import {
   Plus,
   Plug,
@@ -166,6 +167,7 @@ function CreateModal({ defs, onClose, onCreated }: CreateModalProps) {
 
 export default function ConnectorsPage() {
   const router = useRouter()
+  const { success, error: toastError } = useToast()
   const [configs, setConfigs] = useState<ConnectorConfigOut[]>([])
   const [defs, setDefs] = useState<ConnectorDefOut[]>([])
   const [loading, setLoading] = useState(true)
@@ -196,8 +198,9 @@ export default function ConnectorsPage() {
     try {
       await apiFetch(`/v1/connector-configs/${id}`, { method: "DELETE" })
       setConfigs(prev => prev.filter(c => c.id !== id))
+      success("Conector eliminado")
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Error al eliminar")
+      toastError(e instanceof Error ? e.message : "Error al eliminar")
     } finally {
       setDeleting(null)
     }
@@ -206,6 +209,7 @@ export default function ConnectorsPage() {
   function handleCreated(c: ConnectorConfigOut) {
     setConfigs(prev => [...prev, c])
     setShowCreate(false)
+    success("Conector creado correctamente")
     router.push(`/connectors/${c.id}`)
   }
 

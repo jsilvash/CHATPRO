@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/EmptyState"
 import { apiFetch, apiGet } from "@/lib/api"
 import { formatDateTime } from "@/lib/date"
 import type { WebhookOutItem } from "@/lib/types"
+import { useToast } from "@/hooks/use-toast"
 
 const ALL_EVENTS = [
   "message.received",
@@ -28,6 +29,7 @@ const EVENT_LABELS: Record<string, string> = {
 
 export default function WebhooksPage() {
   const qc = useQueryClient()
+  const { success, error: toastError } = useToast()
   const [showCreate, setShowCreate] = useState(false)
   const [webhookUrl, setWebhookUrl] = useState("")
   const [events, setEvents] = useState<string[]>(["message.received"])
@@ -61,6 +63,7 @@ export default function WebhooksPage() {
       setEvents(["message.received"])
       setSecret("")
       setError(null)
+      success("Webhook creado correctamente")
     },
     onError: (e) => setError(e instanceof Error ? e.message : "Error al crear webhook"),
   })
@@ -71,7 +74,11 @@ export default function WebhooksPage() {
         method: "PUT",
         body: JSON.stringify({ enabled }),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["webhooks"] }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ["webhooks"] })
+      success(vars.enabled ? "Webhook activado" : "Webhook desactivado")
+    },
+    onError: (e) => toastError(e instanceof Error ? e.message : "Error al actualizar"),
   })
 
   const deleteMut = useMutation({
@@ -80,7 +87,9 @@ export default function WebhooksPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["webhooks"] })
       setDeleteConfirm(null)
+      success("Webhook eliminado")
     },
+    onError: (e) => toastError(e instanceof Error ? e.message : "Error al eliminar"),
   })
 
   function toggleEvent(e: string) {

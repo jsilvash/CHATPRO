@@ -3,6 +3,8 @@ import { getSession } from "@/lib/auth"
 import { AppNav } from "@/components/AppNav"
 import { NotificationPermissionRequester } from "@/components/NotificationPermissionRequester"
 import { SessionExpiryBanner } from "@/components/SessionExpiryBanner"
+import { Toaster } from "@/components/Toaster"
+import { CommandPalette } from "@/components/CommandPalette"
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession()
@@ -26,6 +28,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </main>
       </div>
       <NotificationPermissionRequester />
+      <Toaster />
+      <CommandPalette />
     </div>
   )
 }
