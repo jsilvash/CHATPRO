@@ -54,7 +54,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
-| F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ PR abierto |
+| F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ Mergeada a main |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
