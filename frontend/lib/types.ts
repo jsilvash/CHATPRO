@@ -14,6 +14,26 @@ export interface ConversationSummary {
   tags: string[]
   notes_count: number
   created_at: string
+  waiting_minutes: number | null
+}
+
+export interface OverdueConversation {
+  id: string
+  wa_contact_phone: string
+  wa_contact_name: string
+  status: string
+  waiting_minutes: number | null
+  assigned_user_id: string | null
+}
+
+export interface OverdueResponse {
+  items: OverdueConversation[]
+  total: number
+}
+
+export interface BulkActionResponse {
+  updated: number
+  errors: string[]
 }
 
 export interface ConversationListResponse {

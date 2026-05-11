@@ -6,6 +6,7 @@ import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, 
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
+import { useOverdueCount } from "@/hooks/use-overdue"
 import { Badge } from "@/components/ui/badge"
 
 interface AppNavProps {
@@ -29,6 +30,7 @@ export function AppNav({ session }: AppNavProps) {
   const pathname = usePathname()
   const router = useRouter()
   const { waitingCount } = useNotifications()
+  const overdueCount = useOverdueCount()
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" })
@@ -64,6 +66,11 @@ export function AppNav({ session }: AppNavProps) {
               {href === "/inbox" && waitingCount > 0 && (
                 <Badge variant="warning" className="text-xs px-1.5 py-0">
                   {waitingCount}
+                </Badge>
+              )}
+              {href === "/inbox" && overdueCount > 0 && (
+                <Badge variant="destructive" className="text-xs px-1.5 py-0" title={`${overdueCount} conversaciones vencidas (+30min)`}>
+                  {overdueCount}!
                 </Badge>
               )}
             </Link>
