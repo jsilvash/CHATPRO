@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
-import { UserCheck, X, Tag, Plus, Trash2, FileText } from "lucide-react"
+import { UserCheck, X, Tag, Plus, Trash2, FileText, History, ChevronDown, ChevronUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -14,7 +14,7 @@ import { ReplyBox } from "./ReplyBox"
 import { apiFetch, apiGet, API_URL } from "@/lib/api"
 import { useConversationSocket } from "@/hooks/use-conversation-socket"
 import { formatDateTime } from "@/lib/date"
-import type { ConversationDetail, MessageOut, NoteOut } from "@/lib/types"
+import type { ConversationDetail, MessageOut, NoteOut, ConversationStatusHistoryEntry } from "@/lib/types"
 
 const STATUS_VARIANTS: Record<string, "default" | "secondary" | "success" | "warning" | "info"> = {
   bot: "secondary",
@@ -43,6 +43,7 @@ export function ConversationView({ convId }: ConversationViewProps) {
   const [newNote, setNewNote] = useState("")
   const [addingTag, setAddingTag] = useState(false)
   const [addingNote, setAddingNote] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   // Carga detalle de la conversación
   const { data, isLoading, error } = useQuery<ConversationDetail>({
@@ -55,6 +56,13 @@ export function ConversationView({ convId }: ConversationViewProps) {
   const { data: notes } = useQuery<NoteOut[]>({
     queryKey: ["conversation-notes", convId],
     queryFn: () => apiGet<NoteOut[]>(`/v1/inbox/${convId}/notes`),
+  })
+
+  // Carga historial de status (bajo demanda)
+  const { data: statusHistory, refetch: refetchHistory } = useQuery<ConversationStatusHistoryEntry[]>({
+    queryKey: ["conversation-status-history", convId],
+    queryFn: () => apiGet<ConversationStatusHistoryEntry[]>(`/v1/inbox/${convId}/status-history`),
+    enabled: showHistory,
   })
 
   // Sincroniza mensajes iniciales
@@ -389,6 +397,47 @@ export function ConversationView({ convId }: ConversationViewProps) {
               </div>
             ))}
           </div>
+        </div>
+
+        <Separator />
+
+        {/* Historial de status */}
+        <div className="p-4">
+          <button
+            onClick={() => {
+              setShowHistory(v => !v)
+              if (!showHistory) refetchHistory()
+            }}
+            className="flex items-center justify-between w-full text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <History className="w-3.5 h-3.5" />
+              Historial
+            </span>
+            {showHistory
+              ? <ChevronUp className="w-3 h-3" />
+              : <ChevronDown className="w-3 h-3" />
+            }
+          </button>
+
+          {showHistory && (
+            <div className="space-y-1.5">
+              {!statusHistory?.length && (
+                <p className="text-xs text-zinc-400">Sin cambios registrados</p>
+              )}
+              {statusHistory?.map((entry) => (
+                <div key={entry.id} className="text-xs text-zinc-500 flex items-start gap-1.5">
+                  <span className="shrink-0 mt-0.5 w-1.5 h-1.5 rounded-full bg-zinc-300 dark:bg-zinc-600" />
+                  <div>
+                    <span className="text-zinc-700 dark:text-zinc-300 font-medium">
+                      {entry.old_status ?? "—"} → {entry.new_status}
+                    </span>
+                    <p className="text-zinc-400">{formatDateTime(new Date(entry.changed_at))}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </aside>
     </div>

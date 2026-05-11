@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback, use } from "react"
 import { useRouter } from "next/navigation"
-import { apiGet } from "@/lib/api"
-import type { WaNumberResponse, WaNumberMetricsOut } from "@/lib/types"
+import { apiGet, apiFetch } from "@/lib/api"
+import type { WaNumberResponse, WaNumberMetricsOut, PersonaListResponse } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,6 +19,8 @@ import {
   Clock,
   AlertCircle,
   TrendingUp,
+  Bot,
+  Save,
 } from "lucide-react"
 
 function sessionStatusBadge(status: string) {
@@ -70,6 +72,11 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
 
   const [waNumber, setWaNumber] = useState<WaNumberResponse | null>(null)
   const [metrics, setMetrics] = useState<WaNumberMetricsOut | null>(null)
+  const [personas, setPersonas] = useState<PersonaListResponse["items"]>([])
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string>("")
+  const [assignedPersonaId, setAssignedPersonaId] = useState<string | null>(null)
+  const [personaSaving, setPersonaSaving] = useState(false)
+  const [personaSuccess, setPersonaSuccess] = useState(false)
   const [dateFrom, setDateFrom] = useState(todayMinus(30))
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10))
   const [loading, setLoading] = useState(true)
@@ -84,6 +91,21 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
       setError(e instanceof Error ? e.message : "Error al cargar número")
     } finally {
       setLoading(false)
+    }
+  }, [id])
+
+  const loadPersonas = useCallback(async () => {
+    try {
+      const res = await apiGet<PersonaListResponse>("/v1/personas")
+      setPersonas(res.items)
+      // Restaurar la persona asignada desde localStorage
+      const stored = localStorage.getItem(`wa-number-persona-${id}`)
+      if (stored) {
+        setAssignedPersonaId(stored)
+        setSelectedPersonaId(stored)
+      }
+    } catch {
+      // silencioso
     }
   }, [id])
 
@@ -103,7 +125,33 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
   }, [id, dateFrom, dateTo])
 
   useEffect(() => { loadNumber() }, [loadNumber])
+  useEffect(() => { loadPersonas() }, [loadPersonas])
   useEffect(() => { if (!loading) loadMetrics() }, [loading, loadMetrics])
+
+  async function handleAssignPersona() {
+    setPersonaSaving(true)
+    setPersonaSuccess(false)
+    try {
+      await apiFetch(`/v1/wa-numbers/${id}/persona`, {
+        method: "PATCH",
+        body: JSON.stringify({ persona_id: selectedPersonaId || null }),
+      })
+      setAssignedPersonaId(selectedPersonaId || null)
+      if (selectedPersonaId) {
+        localStorage.setItem(`wa-number-persona-${id}`, selectedPersonaId)
+      } else {
+        localStorage.removeItem(`wa-number-persona-${id}`)
+      }
+      setPersonaSuccess(true)
+      setTimeout(() => setPersonaSuccess(false), 3000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al asignar persona")
+    } finally {
+      setPersonaSaving(false)
+    }
+  }
+
+  const assignedPersona = personas.find(p => p.id === assignedPersonaId)
 
   return (
     <div className="p-6 space-y-6 max-w-4xl">
@@ -138,6 +186,58 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
           </p>
         </div>
       )}
+
+      {/* Asignación de persona */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Bot className="w-4 h-4 text-zinc-500" />
+            Persona IA asignada
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {assignedPersona && (
+            <div className="mb-3 p-2 rounded bg-zinc-50 dark:bg-zinc-800 text-xs text-zinc-600 dark:text-zinc-400">
+              <span className="font-medium text-zinc-700 dark:text-zinc-300">Actual:</span>{" "}
+              {assignedPersona.name}
+              {assignedPersona.tone && (
+                <span className="ml-2 text-zinc-400">· {assignedPersona.tone}</span>
+              )}
+            </div>
+          )}
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <Label htmlFor="persona_select" className="text-xs mb-1 block">Seleccionar persona</Label>
+              <select
+                id="persona_select"
+                value={selectedPersonaId}
+                onChange={e => setSelectedPersonaId(e.target.value)}
+                className="w-full h-9 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm px-3 text-zinc-900 dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              >
+                <option value="">— Sin persona asignada —</option>
+                {personas.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              onClick={handleAssignPersona}
+              disabled={personaSaving}
+              className="gap-1.5"
+            >
+              <Save className="w-3.5 h-3.5" />
+              {personaSaving ? "Guardando…" : "Guardar"}
+            </Button>
+          </div>
+          {personaSuccess && (
+            <p className="mt-2 text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" />
+              Persona actualizada correctamente
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Filtro de fechas */}
       <Card>
