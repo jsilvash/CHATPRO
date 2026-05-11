@@ -1,282 +1,328 @@
 "use client"
 
-import React, { useEffect, useState, useCallback } from "react"
+import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { apiGet } from "@/lib/api"
-import type { TenantMetricsDashboard } from "@/lib/types"
+import type { MetricsSummaryOut, QuotaOut, UsageMetricOut } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { CreditCard, MessageSquare, Users, HardDrive, Zap, AlertCircle, RefreshCw, TrendingUp } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import {
+  CreditCard,
+  MessageSquare,
+  Brain,
+  HardDrive,
+  Key,
+  AlertCircle,
+  Loader2,
+  BarChart3,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 
-interface MetricsSummary {
-  period_start: string
-  period_end: string
-  messages_in: number
-  messages_out: number
-  conversations_active: number
-  llm_input_tokens: number
-  llm_output_tokens: number
-  llm_cost_cents: number
-  storage_bytes: number
-  api_requests: number
+function todayMinus(days: number) {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return d.toISOString().slice(0, 10)
 }
 
-interface QuotaOut {
-  tenant_id: string
-  max_messages_per_month: number | null
-  max_conversations_active: number | null
-  max_llm_cost_cents_per_month: number | null
-  max_storage_bytes: number | null
-  max_api_requests_per_day: number | null
-  updated_at: string
+function today() {
+  return new Date().toISOString().slice(0, 10)
 }
 
-function UsageBar({
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+// Barra de progreso de cuota
+function QuotaBar({
   label,
   used,
-  max,
-  unit,
-  icon: Icon,
-  color,
+  limit,
+  format,
 }: {
   label: string
   used: number
-  max: number | null
-  unit: string
-  icon: React.ElementType
-  color: string
+  limit: number | null
+  format?: (v: number) => string
 }) {
-  const pct = max && max > 0 ? Math.min((used / max) * 100, 100) : null
-  const isWarning = pct !== null && pct >= 80
-  const isCritical = pct !== null && pct >= 95
+  const fmt = format ?? ((v: number) => v.toLocaleString("es"))
+  const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : null
+  const color =
+    pct === null ? "bg-zinc-200 dark:bg-zinc-700" :
+    pct >= 90 ? "bg-red-500" :
+    pct >= 70 ? "bg-yellow-500" :
+    "bg-green-500"
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className={cn("w-7 h-7 rounded-md flex items-center justify-center", color)}>
-            <Icon className="w-3.5 h-3.5" />
-          </div>
-          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{label}</span>
-        </div>
-        <div className="text-right">
-          <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-            {used.toLocaleString("es")} {unit}
-          </span>
-          {max !== null && (
-            <span className="text-xs text-zinc-400 ml-1">
-              / {max.toLocaleString("es")}
-            </span>
-          )}
-        </div>
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
+        <span className="font-medium text-zinc-800 dark:text-zinc-200">
+          {fmt(used)}{limit ? ` / ${fmt(limit)}` : " (sin límite)"}
+        </span>
       </div>
-      {pct !== null ? (
-        <div className="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
-          <div
-            className={cn(
-              "h-full rounded-full transition-all duration-500",
-              isCritical ? "bg-red-500" : isWarning ? "bg-yellow-500" : "bg-green-500",
-            )}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      ) : (
-        <div className="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
-          <div className="h-full w-full bg-zinc-200 dark:bg-zinc-700 rounded-full" title="Sin límite configurado" />
-        </div>
-      )}
+      <div className="h-1.5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+        <div
+          className={cn("h-full rounded-full transition-all", color)}
+          style={{ width: limit ? `${pct}%` : "0%" }}
+        />
+      </div>
       {pct !== null && (
-        <p className={cn("text-xs", isCritical ? "text-red-500" : isWarning ? "text-yellow-600 dark:text-yellow-400" : "text-zinc-400")}>
-          {isCritical ? "Cuota casi agotada" : isWarning ? `${pct.toFixed(0)}% utilizado` : `${pct.toFixed(0)}% utilizado`}
-        </p>
-      )}
-      {pct === null && (
-        <p className="text-xs text-zinc-400">Sin límite configurado</p>
+        <p className="text-xs text-right text-zinc-400">{pct}% utilizado</p>
       )}
     </div>
   )
 }
 
-function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+// Gráfico de barras simple en CSS/SVG
+function MiniBarChart({
+  data,
+  field,
+  label,
+  color,
+}: {
+  data: UsageMetricOut[]
+  field: keyof UsageMetricOut
+  label: string
+  color: string
+}) {
+  const values = data.map((d) => Number(d[field]))
+  const max = Math.max(...values, 1)
+
   return (
-    <Card>
-      <CardContent className="pt-4 pb-4">
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{label}</p>
-        <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50 mt-0.5">{value}</p>
-        {sub && <p className="text-xs text-zinc-400 mt-0.5">{sub}</p>}
-      </CardContent>
-    </Card>
+    <div>
+      <p className="text-xs font-medium text-zinc-500 mb-2">{label}</p>
+      <div className="flex items-end gap-0.5 h-14">
+        {values.map((v, i) => {
+          const h = Math.max(2, Math.round((v / max) * 56))
+          return (
+            <div
+              key={i}
+              title={`${data[i].metric_date}: ${v.toLocaleString("es")}`}
+              className={cn("flex-1 rounded-sm", color, "cursor-default")}
+              style={{ height: `${h}px` }}
+            />
+          )
+        })}
+      </div>
+      <div className="flex justify-between mt-1">
+        {data.length > 0 && (
+          <>
+            <span className="text-[10px] text-zinc-400">{data[0].metric_date.slice(5)}</span>
+            <span className="text-[10px] text-zinc-400">{data[data.length - 1].metric_date.slice(5)}</span>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
 export default function BillingPage() {
-  const [summary, setSummary] = useState<MetricsSummary | null>(null)
-  const [quota, setQuota] = useState<QuotaOut | null>(null)
-  const [dashboard, setDashboard] = useState<TenantMetricsDashboard | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [period] = useState(30)
 
-  const load = useCallback(async () => {
-    setError(null)
-    try {
-      const [sum, q, dash] = await Promise.allSettled([
-        apiGet<MetricsSummary>("/v1/metrics/summary"),
-        apiGet<QuotaOut>("/v1/quotas"),
-        apiGet<TenantMetricsDashboard>("/v1/metrics/dashboard"),
-      ])
-      if (sum.status === "fulfilled") setSummary(sum.value)
-      if (q.status === "fulfilled") setQuota(q.value)
-      if (dash.status === "fulfilled") setDashboard(dash.value)
-      if (sum.status === "rejected" && q.status === "rejected") {
-        setError("No tienes permiso para ver esta sección (requiere rol owner o admin)")
-      }
-      setLastUpdated(new Date())
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const { data: summary, isLoading: loadSummary } = useQuery<MetricsSummaryOut>({
+    queryKey: ["billing-summary", period],
+    queryFn: () =>
+      apiGet<MetricsSummaryOut>("/v1/metrics/summary", {
+        days: period,
+      }),
+  })
 
-  useEffect(() => { load() }, [load])
+  const { data: quota } = useQuery<QuotaOut>({
+    queryKey: ["billing-quota"],
+    queryFn: () => apiGet<QuotaOut>("/v1/quotas"),
+  })
 
-  const totalMessages = summary ? summary.messages_in + summary.messages_out : 0
-  const costEuros = summary ? (summary.llm_cost_cents / 100).toFixed(2) : "0.00"
-  const storageKb = summary ? Math.round(summary.storage_bytes / 1024) : 0
+  const { data: history } = useQuery<UsageMetricOut[]>({
+    queryKey: ["billing-history", period],
+    queryFn: () =>
+      apiGet<UsageMetricOut[]>("/v1/metrics", {
+        from: todayMinus(period),
+        to: today(),
+      }),
+  })
 
   return (
-    <div className="p-6 space-y-8 max-w-4xl">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <CreditCard className="w-5 h-5 text-zinc-500" />
-            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">Billing y uso</h1>
-          </div>
-          <p className="text-sm text-zinc-500 mt-0.5">
-            Métricas del mes en curso y estado de cuotas
-          </p>
-        </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
-        >
-          <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-          {lastUpdated
-            ? `Actualizado ${lastUpdated.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`
-            : "Actualizar"}
-        </button>
+    <div className="p-6 max-w-4xl space-y-6">
+      <div className="flex items-center gap-2">
+        <CreditCard className="w-5 h-5 text-zinc-500" />
+        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+          Billing y uso
+        </h1>
+        <Badge variant="secondary" className="text-xs">Últimos {period} días</Badge>
       </div>
 
-      {error && (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-yellow-50 text-yellow-700 text-sm dark:bg-yellow-900/20 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-800">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          {error}
+      {loadSummary && (
+        <div className="flex items-center gap-2 text-sm text-zinc-400">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Cargando datos de uso...
         </div>
       )}
 
-      {/* Métricas del mes */}
+      {/* Resumen de uso */}
       {summary && (
         <div>
           <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
-            Métricas del mes
-            <span className="normal-case font-normal ml-2 text-zinc-400">
-              ({new Date(summary.period_start).toLocaleDateString("es", { month: "long", year: "numeric" })})
-            </span>
+            Resumen del período
           </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-            <StatCard label="Mensajes totales" value={totalMessages.toLocaleString("es")} sub="Entrantes + salientes" />
-            <StatCard label="Mensajes recibidos" value={summary.messages_in.toLocaleString("es")} />
-            <StatCard label="Mensajes enviados" value={summary.messages_out.toLocaleString("es")} />
-            <StatCard label="Coste LLM" value={`€${costEuros}`} sub={`${(summary.llm_input_tokens + summary.llm_output_tokens).toLocaleString("es")} tokens`} />
-            <StatCard label="Peticiones API" value={summary.api_requests.toLocaleString("es")} />
-            <StatCard label="Almacenamiento" value={`${storageKb.toLocaleString("es")} KB`} />
-          </div>
-        </div>
-      )}
-
-      {/* Estado en tiempo real */}
-      {dashboard && (
-        <div>
-          <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-3">
-            Estado actual
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <StatCard label="Convs. activas" value={dashboard.conversations_active} />
-            <StatCard label="Con bot" value={dashboard.conversations_bot} />
-            <StatCard label="Agentes online" value={dashboard.agents_online} />
-            <StatCard label="Sin asignar" value={dashboard.unassigned_waiting} />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-zinc-500">Mensajes recibidos</p>
+                  <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
+                </div>
+                <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
+                  {summary.messages_in.toLocaleString("es")}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-zinc-500">Mensajes enviados</p>
+                  <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
+                </div>
+                <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
+                  {summary.messages_out.toLocaleString("es")}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-zinc-500">Costo LLM</p>
+                  <Brain className="w-3.5 h-3.5 text-purple-400" />
+                </div>
+                <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
+                  {formatCents(summary.llm_cost_cents)}
+                </p>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  {(summary.llm_input_tokens + summary.llm_output_tokens).toLocaleString("es")} tokens
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-zinc-500">Almacenamiento</p>
+                  <HardDrive className="w-3.5 h-3.5 text-teal-400" />
+                </div>
+                <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
+                  {formatBytes(summary.storage_bytes)}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-zinc-500">Peticiones API</p>
+                  <Key className="w-3.5 h-3.5 text-amber-400" />
+                </div>
+                <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
+                  {summary.api_requests.toLocaleString("es")}
+                </p>
+              </CardContent>
+            </Card>
           </div>
         </div>
       )}
 
       {/* Cuotas */}
-      <div>
-        <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-4">
-          Cuotas
-        </h2>
-        {loading && !quota ? (
-          <Card>
-            <CardContent className="pt-6 space-y-6">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="animate-pulse space-y-2">
-                  <div className="h-3 bg-zinc-200 dark:bg-zinc-700 rounded w-1/3" />
-                  <div className="h-2 bg-zinc-200 dark:bg-zinc-700 rounded" />
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        ) : quota ? (
-          <Card>
-            <CardContent className="pt-6 space-y-6">
-              <UsageBar
-                label="Mensajes / mes"
-                used={totalMessages}
-                max={quota.max_messages_per_month}
-                unit="msgs"
-                icon={MessageSquare}
-                color="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
-              />
-              <UsageBar
-                label="Conversaciones activas"
-                used={dashboard?.conversations_active ?? 0}
-                max={quota.max_conversations_active}
-                unit="convs"
-                icon={Users}
-                color="bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400"
-              />
-              <UsageBar
-                label="Coste LLM / mes"
-                used={summary ? Math.round(summary.llm_cost_cents) : 0}
-                max={quota.max_llm_cost_cents_per_month}
-                unit="¢"
-                icon={Zap}
-                color="bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400"
-              />
-              <UsageBar
-                label="Almacenamiento"
-                used={summary?.storage_bytes ?? 0}
-                max={quota.max_storage_bytes}
-                unit="bytes"
-                icon={HardDrive}
-                color="bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400"
-              />
-              <UsageBar
-                label="Peticiones API / día"
-                used={dashboard ? Math.round((summary?.api_requests ?? 0) / 30) : 0}
-                max={quota.max_api_requests_per_day}
-                unit="reqs"
-                icon={TrendingUp}
-                color="bg-indigo-100 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400"
-              />
-            </CardContent>
-          </Card>
-        ) : (
-          <p className="text-sm text-zinc-400">No se pudieron cargar las cuotas.</p>
-        )}
-      </div>
+      {quota && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-zinc-400" />
+              Cuotas del plan
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <QuotaBar
+              label="Mensajes por mes"
+              used={summary?.messages_in ?? 0 + (summary?.messages_out ?? 0)}
+              limit={quota.max_messages_per_month}
+            />
+            <QuotaBar
+              label="Conversaciones activas"
+              used={summary?.conversations_active ?? 0}
+              limit={quota.max_conversations_active}
+            />
+            <QuotaBar
+              label="Costo LLM por mes"
+              used={summary?.llm_cost_cents ?? 0}
+              limit={quota.max_llm_cost_cents_per_month}
+              format={formatCents}
+            />
+            <QuotaBar
+              label="Almacenamiento"
+              used={summary?.storage_bytes ?? 0}
+              limit={quota.max_storage_bytes}
+              format={formatBytes}
+            />
+            <QuotaBar
+              label="Peticiones API por día"
+              used={summary?.api_requests ?? 0}
+              limit={quota.max_api_requests_per_day}
+            />
+            <p className="text-xs text-zinc-400">
+              Última actualización: {new Date(quota.updated_at).toLocaleDateString("es")}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
-      <p className="text-xs text-zinc-400">
-        Las cuotas son configuradas por el administrador del sistema. Contacta con soporte si necesitas aumentar límites.
-      </p>
+      {/* Historial gráfico */}
+      {history && history.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-zinc-400" />
+              Historial diario
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <MiniBarChart
+              data={history}
+              field="messages_in"
+              label="Mensajes recibidos"
+              color="bg-blue-400"
+            />
+            <MiniBarChart
+              data={history}
+              field="messages_out"
+              label="Mensajes enviados"
+              color="bg-indigo-400"
+            />
+            <MiniBarChart
+              data={history}
+              field="llm_cost_cents"
+              label="Costo LLM (centavos)"
+              color="bg-purple-400"
+            />
+            <MiniBarChart
+              data={history}
+              field="api_requests"
+              label="Peticiones API"
+              color="bg-amber-400"
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {history && history.length === 0 && !loadSummary && (
+        <div className="text-center py-12 text-zinc-400 text-sm">
+          <BarChart3 className="w-8 h-8 mx-auto mb-3 opacity-30" />
+          <p>No hay datos de uso en los últimos {period} días.</p>
+        </div>
+      )}
     </div>
   )
 }

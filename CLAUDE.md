@@ -54,6 +54,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
+| F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ Mergeada a main |
+| F10 | Frontend: Configuración tenant + onboarding wizard + UX inbox + audit log | ✅ PR abierto |
 | F11 | Frontend: Páginas de error + notificaciones browser + accesibilidad + gestión de sesión | ✅ PR abierto |
 | F12 | Frontend: Dark mode + responsive móvil + rendimiento + empty states | ✅ PR abierto |
 | F13 | Frontend: Toasts globales + Command palette + Exportación GDPR + Billing | ✅ PR abierto |
@@ -299,6 +301,19 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Menciones @usuario en notas (frontend) | `ConversationView.tsx`: textarea de notas detecta `@query` con regex, muestra autocomplete de agentes disponibles (GET /v1/users/available-agents). `insertMention()` reemplaza el texto antes del cursor. Dropdown posicionado absolutamente sobre el textarea. | Fase F8 |
 | Canned responses en reply (frontend) | `ReplyBox.tsx` acepta `onCannedToggle` + `showCannedActive`. Botón Zap (⚡) toggle muestra picker encima de la caja. Picker: input de búsqueda + lista filtrable de canned responses (GET /v1/canned-responses). Click inserta y envía directamente. | Fase F8 |
 | Nav F8 | `AppNav.tsx` añade rutas: `/knowledge` (BookOpen icon), `/api-keys` (Key icon), `/webhooks` (Webhook icon). | Fase F8 |
+| Toast system | `hooks/use-toast.ts`: `useToastStore` (Zustand) + `useToast()` hook. `components/Toaster.tsx`: lista fija bottom-right, auto-dismiss 4s, variantes default/success/destructive. Incluido en `Providers.tsx`. | Fase F9 |
+| GDPR Export frontend | `ExportSection` en dashboard/page.tsx: POST /v1/tenants/me/export → job.id, polling cada 3s GET /v1/tenants/me/export/{id}/status, cuando done GET /v1/tenants/me/export/{id}/download → href. Toast de éxito/error. | Fase F9 |
+| Billing page frontend | `app/(app)/billing/page.tsx`: GET /v1/metrics/summary (días=30) + GET /v1/quotas + GET /v1/metrics (historial). `QuotaBar` con barra de progreso y % utilizado. `MiniBarChart` CSS puro (flex+div). | Fase F9 |
+| KB Stats frontend | `KbStats` component en /knowledge: calcula totales a partir del array de docs ya cargado (sin endpoint extra). Desglosa ready/processing/error + pdf/url. | Fase F9 |
+| Command Palette | `components/CommandPalette.tsx`: Cmd+K/Ctrl+K via `AppShell.tsx` (client component envuelve layout). Busca contactos (GET /v1/contacts/search) + convs (GET /v1/inbox?search=) en paralelo. Debounce 300ms. Navegación ↑↓/Enter/Esc. Hint ⌘K en AppNav. | Fase F9 |
+| AppShell | `components/AppShell.tsx`: client component que registra el listener Cmd+K y renderiza `CommandPalette`. Envuelve el layout de la app para mantener el layout server-component. | Fase F9 |
+| Nav F9 | `AppNav.tsx` añade ruta: `/billing` (CreditCard icon). | Fase F9 |
+| Configuración tenant (frontend) | `app/(app)/settings/page.tsx`: GET /v1/tenants/me (display name/slug/plan read-only). GET /v1/me para datos del usuario. Edit full_name via PATCH /v1/users/{sub} (sub del JWT decodificado con `decodeJwt` de jose). Sección cambio contraseña con PATCH /v1/me/password (UI implementada, backend pendiente). | Fase F10 |
+| Onboarding wizard | `OnboardingBanner` en dashboard/page.tsx: consulta GET /v1/wa-numbers y GET /v1/connector-configs en paralelo (useQuery). Si total=0 en cualquiera → muestra banner dismissable con 3 pasos: número WA, persona IA, conector. Persiste dismiss en `localStorage` con clave `chatpro_onboarding_dismissed`. Se oculta si ambos tienen ítems. | Fase F10 |
+| Unsaved changes ReplyBox | `ReplyBox.tsx`: `useEffect` registra `beforeunload` handler cuando `text.trim()` es no-vacío. Se limpia al limpiar el componente o al enviar el mensaje. | Fase F10 |
+| Timestamps relativos en mensajes | `MessageBubble.tsx`: componente `RelativeTime` usa `formatDistanceToNow` existente + `setInterval` de 60s para refrescar si el mensaje es <1h. `title` con fecha absoluta al hacer hover. | Fase F10 |
+| Audit log table | `app/(app)/audit-log/page.tsx`: GET /v1/audit-log con filtros action/target_type/date_from/date_to + paginación (50 por página). Tabla con columnas fecha/actor/acción/objetivo/IP. Botón export CSV (GET /v1/audit-log/export). `actionVariant()` colorea Badge según tipo de acción. | Fase F10 |
+| Nav F10 | `AppNav.tsx` añade rutas: `/audit-log` (Shield icon), `/settings` (Settings icon). | Fase F10 |
 | Páginas de error personalizadas | `app/not-found.tsx`: 404 con links a /dashboard e /inbox. `app/error.tsx`: boundary de error con botón "Reintentar" (reset) + digest. `app/(app)/loading.tsx`: skeleton animado (cards + filas de tabla) con `role="status"` y `aria-label`. | Fase F11 |
 | Notificaciones de browser | `use-notifications.ts`: `sendBrowserNotification()` para `conversation.waiting_agent` — solo cuando `document.visibilityState !== "visible"` y permiso granted. `requestNotificationPermission()` exportada. `NotificationPermissionRequester`: cliente que pide permiso tras 3s de mount, integrado en `app/(app)/layout.tsx`. | Fase F11 |
 | Accesibilidad | `SkipToContent`: link oculto (`sr-only`) con `focus:not-sr-only` que salta a `#main-content`. Añadido en root layout. `main#main-content` con `tabIndex={-1}` en app layout. Badge de inbox envuelto en `<span aria-live="polite" aria-label="...">` en AppNav. | Fase F11 |
@@ -368,50 +383,48 @@ Reglas:
 
 ---
 
-## Prompt de arranque — Fase F9 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F11 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F9 — Frontend: Mejoras UX avanzadas + exportación + onboarding.
+Retomo Fase F11 — Frontend: Mejoras de rendimiento + notificaciones push + páginas de error + accesibilidad.
 Contexto:
-- Fase F8 (panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned) completada. PR abierto en rama claude/fase-f8-frontend-VZP4i.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f9-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2-F8 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F8" y este prompt). Nada más.
+- Fase F10 (configuración tenant + onboarding + UX inbox + audit log) completada. PR abierto en rama claude/fase-f10-frontend-7AUyw.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f11-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F10 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F10" y este prompt). Nada más.
 
-Estado tras Fase F8 (ya en rama claude/fase-f8-frontend-VZP4i):
-  A. Panel Knowledge Base: /knowledge (lista, upload PDF/URL, delete, badges de estado).
-  B. Panel API Keys: /api-keys (lista, crear con scopes, revocar, token mostrado 1 sola vez).
-  C. Panel Webhooks: /webhooks (lista, crear, toggle enabled, delete, secreto mostrado 1 vez).
-  D. Vista contacto mejorada: /contacts/[id] con facts inline edit (hover → pencil), add, delete.
-  E. Menciones @usuario en notas: autocomplete dropdown en textarea de notas de ConversationView.
-  F. Canned responses en reply: botón Zap en ReplyBox, picker filtrable encima de la caja de reply.
-  G. Nav: AppNav añade /knowledge (BookOpen), /api-keys (Key), /webhooks (Webhook).
+Estado tras Fase F10 (ya en main):
+  A. /settings: perfil usuario (full_name editable via PATCH /v1/users/{sub}), info tenant read-only, cambio contraseña (UI lista, backend pendiente endpoint PATCH /v1/me/password).
+  B. OnboardingBanner en dashboard: 3 pasos (número WA, persona IA, conector), dismissable con localStorage.
+  C. ReplyBox: beforeunload warning cuando hay texto no enviado.
+  D. MessageBubble: timestamps relativos con auto-refresh 60s + title con fecha absoluta.
+  E. /audit-log: tabla con filtros action/target_type/date_from/date_to + paginación + export CSV.
+  F. Nav: AppNav añade /audit-log (Shield) y /settings (Settings).
 
-Opciones a implementar en Fase F9 (en orden A → B → C → D):
-  A. Exportación GDPR desde el frontend:
-     - Botón "Exportar mis datos" en /users/[user_id] o en /dashboard.
-     - POST /v1/tenants/me/export → muestra estado del job con polling GET /v1/tenants/me/export/{id}/status.
-     - Cuando status=done, botón de descarga: GET /v1/tenants/me/export/{id}/download (URL firmada S3).
+Opciones a implementar en Fase F11 (en orden A → B → C → D):
+  A. Páginas de error personalizadas:
+     - app/not-found.tsx: 404 con link a /dashboard.
+     - app/error.tsx: error genérico con botón "Reintentar" (reset).
+     - app/(app)/loading.tsx: skeleton de carga para páginas de la app.
 
-  B. Página de billing y uso:
-     - /billing: GET /v1/billing/usage (si existe) o GET /v1/metrics/dashboard para mostrar mensajes, LLM cost.
-     - Cuotas: messages_limit, conversations_limit, documents_limit por plan.
-     - Historial de métricas: gráfico simple (bars o líneas) de uso diario/semanal.
+  B. Notificaciones de browser (Web Notifications API):
+     - Pedir permiso de notificaciones en layout de la app.
+     - Cuando llega un WS event conversation.waiting_agent → mostrar notificación de sistema.
+     - Solo si el tab no está activo (document.visibilityState !== "visible").
 
-  C. Vista global de estadísticas de la KB:
-     - En /knowledge: añadir sección "Estadísticas" con total documentos, chunks, estado de ingestión.
-     - Contador de documentos por tipo (PDF vs URL).
-     - Estado: cuántos ready / processing / error.
+  C. Mejoras de accesibilidad:
+     - Focus management: al abrir modales, mover foco al primer elemento interactivo.
+     - Skip-to-content link oculto visible al tab-focus.
+     - aria-live regions en áreas que actualizan dinámicamente (badges de contador, métricas).
 
-  D. Mejoras UX generales:
-     - Toast notifications para acciones CRUD (crear, eliminar, error).
-     - Confirmar antes de salir si hay unsaved changes en formularios largos.
-     - Búsqueda global en nav (Command palette con Cmd+K) que busca contactos + conversaciones.
+  D. Gestión de sesión / seguridad:
+     - Logout automático cuando el token expira (detectar 401 de cualquier request).
+     - Indicador de sesión a punto de expirar (5 min antes) con banner para refrescar.
+     - Contador de sesión activa en /settings.
 
 Reglas:
 - NO tocar src/ Python
-- Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F10
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F12
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 

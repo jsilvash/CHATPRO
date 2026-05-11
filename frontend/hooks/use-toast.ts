@@ -2,38 +2,42 @@
 
 import { create } from "zustand"
 
-export type ToastType = "success" | "error" | "info"
+export type ToastVariant = "default" | "success" | "destructive"
 
-export interface Toast {
+export interface ToastItem {
   id: string
-  message: string
-  type: ToastType
+  title: string
+  description?: string
+  variant?: ToastVariant
 }
 
 interface ToastStore {
-  toasts: Toast[]
-  addToast: (message: string, type?: ToastType) => void
+  toasts: ToastItem[]
+  addToast: (t: Omit<ToastItem, "id">) => void
   removeToast: (id: string) => void
 }
 
 export const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
-  addToast: (message, type = "info") => {
-    const id = crypto.randomUUID()
-    set((s) => ({ toasts: [...s.toasts, { id, message, type }] }))
+  addToast: (t) => {
+    const id = Math.random().toString(36).slice(2, 9)
+    set((s) => ({ toasts: [...s.toasts, { ...t, id }] }))
     setTimeout(() => {
-      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
+      set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) }))
     }, 4000)
   },
-  removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) })),
 }))
 
 export function useToast() {
   const { addToast } = useToastStore()
   return {
-    toast: (message: string, type?: ToastType) => addToast(message, type),
-    success: (message: string) => addToast(message, "success"),
-    error: (message: string) => addToast(message, "error"),
-    info: (message: string) => addToast(message, "info"),
+    toast: (opts: Omit<ToastItem, "id">) => addToast(opts),
+    success: (title: string, description?: string) =>
+      addToast({ title, description, variant: "success" }),
+    error: (title: string, description?: string) =>
+      addToast({ title, description, variant: "destructive" }),
+    info: (title: string, description?: string) =>
+      addToast({ title, description, variant: "default" }),
   }
 }

@@ -2,10 +2,11 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3, BookOpen, Key, Webhook, CreditCard, Sun, Moon, Monitor, Menu, X } from "lucide-react"
+import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3, BookOpen, Key, Webhook, CreditCard, Shield, Settings, Search, Sun, Moon, Monitor, Menu, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
+import { useOverdueCount } from "@/hooks/use-overdue"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/components/ThemeProvider"
 import { useState } from "react"
@@ -29,12 +30,15 @@ const navItems = [
   { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/webhooks", label: "Webhooks", icon: Webhook },
   { href: "/billing", label: "Billing", icon: CreditCard },
+  { href: "/audit-log", label: "Audit Log", icon: Shield },
+  { href: "/settings", label: "Configuración", icon: Settings },
 ]
 
 export function AppNav({ session }: AppNavProps) {
   const pathname = usePathname()
   const router = useRouter()
   const { waitingCount } = useNotifications()
+  const overdueCount = useOverdueCount()
   const { theme, setTheme } = useTheme()
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -88,24 +92,31 @@ export function AppNav({ session }: AppNavProps) {
               <Icon className="w-4 h-4 shrink-0" />
               <span className="flex-1">{label}</span>
               {href === "/inbox" && (
-                <span
-                  aria-live="polite"
-                  aria-atomic="true"
-                  aria-label={waitingCount > 0 ? `${waitingCount} conversaciones esperando` : undefined}
-                >
-                  {waitingCount > 0 && (
-                    <Badge variant="warning" className="text-xs px-1.5 py-0" aria-hidden="true">
-                      {waitingCount}
+                <>
+                  <span
+                    aria-live="polite"
+                    aria-atomic="true"
+                    aria-label={waitingCount > 0 ? `${waitingCount} conversaciones esperando` : undefined}
+                  >
+                    {waitingCount > 0 && (
+                      <Badge variant="warning" className="text-xs px-1.5 py-0" aria-hidden="true">
+                        {waitingCount}
+                      </Badge>
+                    )}
+                  </span>
+                  {overdueCount > 0 && (
+                    <Badge variant="destructive" className="text-xs px-1.5 py-0" title={`${overdueCount} conversaciones vencidas (+30min)`}>
+                      {overdueCount}!
                     </Badge>
                   )}
-                </span>
+                </>
               )}
             </Link>
           )
         })}
       </div>
 
-      {/* Tema + Logout */}
+      {/* Tema + Buscar + Logout */}
       <div className="px-2 py-4 border-t border-zinc-200 dark:border-zinc-700 space-y-1">
         {/* Toggle tema */}
         <div className="flex items-center gap-1 px-3 py-1">
@@ -125,6 +136,11 @@ export function AppNav({ session }: AppNavProps) {
               <Icon className="w-3.5 h-3.5" />
             </button>
           ))}
+        </div>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-zinc-400 select-none">
+          <Search className="w-3.5 h-3.5" />
+          <span className="flex-1">Buscar</span>
+          <kbd className="font-mono text-[10px] bg-zinc-100 dark:bg-zinc-800 px-1 rounded">⌘K</kbd>
         </div>
         <button
           onClick={handleLogout}

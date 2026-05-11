@@ -53,9 +53,13 @@ export default function ApiKeysPage() {
       setName("")
       setScopes(["read"])
       setError(null)
-      success("API key creada — copia el token ahora")
+      success("API Key creada", "Copia el token ahora — no se volverá a mostrar.")
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "Error al crear API key"),
+    onError: (e) => {
+      const msg = e instanceof Error ? e.message : "Error al crear API key"
+      setError(msg)
+      toastError("Error al crear API key", msg)
+    },
   })
 
   const deleteMut = useMutation({
@@ -64,9 +68,9 @@ export default function ApiKeysPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["api-keys"] })
       setDeleteConfirm(null)
-      success("API key revocada")
+      success("API Key revocada")
     },
-    onError: (e) => toastError(e instanceof Error ? e.message : "Error al revocar"),
+    onError: (e) => toastError("Error al revocar", e instanceof Error ? e.message : undefined),
   })
 
   async function copyToken() {

@@ -1,10 +1,9 @@
 import { redirect } from "next/navigation"
 import { getSession } from "@/lib/auth"
 import { AppNav } from "@/components/AppNav"
+import { AppShell } from "@/components/AppShell"
 import { NotificationPermissionRequester } from "@/components/NotificationPermissionRequester"
 import { SessionExpiryBanner } from "@/components/SessionExpiryBanner"
-import { Toaster } from "@/components/Toaster"
-import { CommandPalette } from "@/components/CommandPalette"
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession()
@@ -13,23 +12,23 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <AppNav session={session} />
-      {/* En móvil el nav es fixed, por eso flex-1 ocupa todo el ancho */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <SessionExpiryBanner tokenExp={session.exp} />
-        {/* pt-12 en móvil para dejar espacio al botón hamburguesa */}
-        <main
-          id="main-content"
-          className="flex-1 overflow-auto bg-zinc-50 dark:bg-zinc-950 pt-12 md:pt-0"
-          tabIndex={-1}
-        >
-          {children}
-        </main>
+    <AppShell>
+      <div className="flex h-screen overflow-hidden">
+        <AppNav session={session} />
+        {/* En móvil el nav es fixed, por eso flex-1 ocupa todo el ancho */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          <SessionExpiryBanner tokenExp={session.exp} />
+          {/* pt-12 en móvil para dejar espacio al botón hamburguesa */}
+          <main
+            id="main-content"
+            className="flex-1 overflow-auto bg-zinc-50 dark:bg-zinc-950 pt-12 md:pt-0"
+            tabIndex={-1}
+          >
+            {children}
+          </main>
+        </div>
+        <NotificationPermissionRequester />
       </div>
-      <NotificationPermissionRequester />
-      <Toaster />
-      <CommandPalette />
-    </div>
+    </AppShell>
   )
 }

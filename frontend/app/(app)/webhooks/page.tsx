@@ -63,9 +63,13 @@ export default function WebhooksPage() {
       setEvents(["message.received"])
       setSecret("")
       setError(null)
-      success("Webhook creado correctamente")
+      success("Webhook creado", data.secret ? "Copia el secreto HMAC ahora." : undefined)
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "Error al crear webhook"),
+    onError: (e) => {
+      const msg = e instanceof Error ? e.message : "Error al crear webhook"
+      setError(msg)
+      toastError("Error al crear webhook", msg)
+    },
   })
 
   const toggleMut = useMutation({
@@ -78,7 +82,7 @@ export default function WebhooksPage() {
       qc.invalidateQueries({ queryKey: ["webhooks"] })
       success(vars.enabled ? "Webhook activado" : "Webhook desactivado")
     },
-    onError: (e) => toastError(e instanceof Error ? e.message : "Error al actualizar"),
+    onError: (e) => toastError("Error al actualizar", e instanceof Error ? e.message : undefined),
   })
 
   const deleteMut = useMutation({
@@ -89,7 +93,7 @@ export default function WebhooksPage() {
       setDeleteConfirm(null)
       success("Webhook eliminado")
     },
-    onError: (e) => toastError(e instanceof Error ? e.message : "Error al eliminar"),
+    onError: (e) => toastError("Error al eliminar", e instanceof Error ? e.message : undefined),
   })
 
   function toggleEvent(e: string) {
