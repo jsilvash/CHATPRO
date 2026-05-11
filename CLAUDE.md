@@ -52,6 +52,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ Mergeada a main |
 | F5 | Frontend: Números WA + personas IA + filtros inbox avanzados | ✅ PR abierto |
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
+| F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -282,55 +283,66 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Métricas agente por período (frontend) | `/users/[user_id]/page.tsx` añade sección "Métricas por período" con filtros date_from/date_to + botón "Calcular". Llama `GET /v1/users/{id}/metrics`. Muestra: conversations_handled, avg_first_response_sec, avg_resolution_sec, messages_sent, notes_created, busiest_hour. | Fase F6 |
 | Historial de status (frontend) | `ConversationView.tsx` añade sección colapsable "Historial" en panel lateral. Carga `GET /v1/inbox/{id}/status-history` bajo demanda (enabled=showHistory). Muestra timeline con old_status → new_status + timestamp. | Fase F6 |
 | Nav F6 | `AppNav.tsx` añade ruta: `/office-hours` (Clock3 icon). | Fase F6 |
+| Bulk actions inbox (frontend) | `InboxList.tsx`: toggle "Selección múltiple" activa `selectionMode`. `ConversationCard` muestra checkbox cuando `selectionMode=true`. Barra flotante absoluta en la parte inferior con: bulk-assign (select agente), bulk-tag (input), bulk-close. POST a `/v1/inbox/bulk-assign`, `/v1/inbox/bulk-tag`, `/v1/inbox/bulk-close`. | Fase F7 |
+| Agentes mejorado (frontend) | `/users/agents/page.tsx`: filtros date_from/date_to + botón "Calcular métricas". `Promise.all` de `GET /v1/users/{id}/metrics` para todos los agentes. Toggle entre vista de carga (LoadBar) y tabla comparativa (conv. activas, resueltas, t. primera respuesta, t. resolución, mensajes). | Fase F7 |
+| Office hours grid semanal | `app/(app)/office-hours/page.tsx`: toggle List/LayoutGrid. Grid 7 días × 24 horas. `coverageMap[day][hour]` calculado de registros `is_active=true`. Celda verde si cubierta, gris si no. Leyenda al pie. Estado `gridView` local (no persiste). | Fase F7 |
+| Overdue inbox UX | Hook `hooks/use-overdue.ts`: polling cada 60s a `GET /v1/inbox/overdue?threshold_minutes=30`. `AppNav.tsx` muestra badge rojo "N!" en link `/inbox`. `InboxList` filtro "Solo vencidas" en panel filtros: query usa endpoint overdue en lugar del inbox normal. `ConversationSummary.waiting_minutes: number | null` añadido al tipo. | Fase F7 |
 
 ---
 
-## Prompt de arranque — Fase F7 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F8 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F7 — Frontend: Bulk actions inbox + carga de trabajo agentes + mejoras UX avanzadas.
+Retomo Fase F8 — Frontend: Notificaciones en tiempo real mejoradas + tags avanzados + panel KB.
 Contexto:
-- Fase F6 (office hours + asignación persona WA + métricas agente + historial status) completada. PR abierto en rama claude/fase-f6-frontend-EbJjG.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f7-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2/F3/F4/F5/F6 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F6" y este prompt). Nada más.
+- Fase F7 (bulk actions inbox + agentes mejorado + office hours grid + overdue UX) completada. PR abierto en rama claude/fase-f7-frontend-VUoST.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f8-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2/F3/F4/F5/F6/F7 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F7" y este prompt). Nada más.
 
-Estado tras Fase F6 (ya en rama claude/fase-f6-frontend-EbJjG):
-  A. Asignación persona a WaNumber: /wa-numbers/[id] con selector de persona + PATCH /v1/wa-numbers/{id}/persona.
-     - persona_id persiste en localStorage (backend no lo expone en WaNumberResponse).
-  B. Office hours: /office-hours CRUD completo (tabla + inline edit + formulario de creación).
-     - Selector de número WA opcional, días, horas, mensaje fuera de horario.
-  C. Métricas agente por período: /users/[user_id] añade sección con filtros date_from/date_to.
-     - GET /v1/users/{id}/metrics: conversations_handled, avg_first_response_sec, avg_resolution_sec, messages_sent, notes_created, busiest_hour.
-  D. Historial de status en ConversationView: sección colapsable "Historial" en panel lateral.
-     - GET /v1/inbox/{id}/status-history bajo demanda (enabled=showHistory).
-  E. Nav: AppNav añade /office-hours (Clock3 icon).
-
-Opciones a implementar en Fase F7 (en orden A → B → C → D):
+Estado tras Fase F7 (ya en rama claude/fase-f7-frontend-VUoST):
   A. Bulk actions inbox:
-     - Selección múltiple de conversaciones en InboxList (checkboxes).
-     - Acciones: bulk-assign (POST /v1/inbox/bulk-assign), bulk-tag (POST /v1/inbox/bulk-tag), bulk-close (POST /v1/inbox/bulk-close).
-     - Barra de acciones flotante cuando hay selección.
+     - Checkboxes en ConversationCard (modo selección múltiple activado por toggle en InboxList).
+     - Barra flotante con: bulk-assign (select agente + OK), bulk-tag (input + OK), bulk-close (confirm).
+     - POST /v1/inbox/bulk-assign, /bulk-tag, /bulk-close desde InboxList.
+  B. Agentes mejorado (/users/agents):
+     - Filtros date_from/date_to con botón "Calcular métricas".
+     - Tabla comparativa: conv. activas, resueltas período, t. primera respuesta, t. resolución, mensajes.
+     - GET /v1/users/{id}/metrics en paralelo para todos. Toggle lista/tabla.
+  C. Office hours grid semanal:
+     - Toggle List/LayoutGrid en /office-hours. Grid 7 días × 24 horas con celdas coloreadas.
+     - Verde=cubierto (is_active), gris=sin cobertura. Leyenda al pie.
+  D. Overdue inbox UX:
+     - Hook useOverdueCount: polling 60s a GET /v1/inbox/overdue?threshold_minutes=30.
+     - Badge rojo con "N!" en link /inbox del nav.
+     - Filtro "Solo vencidas" en panel filtros avanzados de InboxList.
 
-  B. Página de carga de trabajo de agentes mejorada:
-     - /users/agents ya existe. Ampliar con:
-       - Métricas por período usando GET /v1/users/{id}/metrics para cada agente.
-       - Tabla comparativa: agente, conv activas, conv resueltas período, tiempo respuesta prom.
-     - Filtro de período global aplicado a todos.
+Opciones a implementar en Fase F8 (en orden A → B → C → D):
+  A. Panel de Knowledge Base:
+     - /knowledge página nueva con lista de documentos (GET /v1/knowledge/documents).
+     - Upload PDF (POST /v1/knowledge/documents con multipart) + ingestión de URL.
+     - DELETE documento + estado de ingestión.
+     - Búsqueda RAG (GET /v1/knowledge/search?q=) con resultados y score.
 
-  C. Dashboard de office hours — vista semanal:
-     - En /office-hours: añadir vista de cuadrícula semanal (7 días × 24 horas) tipo calendario.
-     - Cada celda coloreada si hay cobertura activa.
+  B. Panel API keys y webhooks:
+     - /api-keys: CRUD (GET /v1/api-keys, POST, DELETE).
+     - /webhooks: CRUD (GET /v1/webhooks, POST, PATCH, DELETE).
+     - Mostrar campos: url, events, secret (parcialmente oculto), active.
 
-  D. Mejoras UX inbox avanzadas:
-     - Conversaciones "overdue": GET /v1/inbox/overdue?threshold_minutes=30.
-     - Badge en nav del inbox mostrando cuántas llevan >30min esperando.
-     - Botón en InboxList para filtrar solo overdue.
+  C. Vista de contacto mejorada:
+     - /contacts/[id] muestra facts del contacto (key/value/source/confidence).
+     - Opción de añadir/editar/eliminar facts inline.
+     - Historial de pedidos: si existe connector, mostrar orders vinculados.
+
+  D. Mejoras inbox conversación:
+     - Panel de notas internas en ConversationView (ya existe API).
+     - Menciones @usuario en notas (autocomplete con /v1/users/available-agents).
+     - Canned responses en el campo de reply: botón "Respuestas rápidas" que abre lista filtrable.
 
 Reglas:
 - NO tocar src/ Python
 - Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F8
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F9
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 
