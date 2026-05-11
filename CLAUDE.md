@@ -54,7 +54,8 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
-| F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ PR abierto |
+| F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ Mergeada a main |
+| F10 | Frontend: Configuración tenant + onboarding wizard + UX inbox + audit log | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -304,55 +305,57 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Command Palette | `components/CommandPalette.tsx`: Cmd+K/Ctrl+K via `AppShell.tsx` (client component envuelve layout). Busca contactos (GET /v1/contacts/search) + convs (GET /v1/inbox?search=) en paralelo. Debounce 300ms. Navegación ↑↓/Enter/Esc. Hint ⌘K en AppNav. | Fase F9 |
 | AppShell | `components/AppShell.tsx`: client component que registra el listener Cmd+K y renderiza `CommandPalette`. Envuelve el layout de la app para mantener el layout server-component. | Fase F9 |
 | Nav F9 | `AppNav.tsx` añade ruta: `/billing` (CreditCard icon). | Fase F9 |
+| Configuración tenant (frontend) | `app/(app)/settings/page.tsx`: GET /v1/tenants/me (display name/slug/plan read-only). GET /v1/me para datos del usuario. Edit full_name via PATCH /v1/users/{sub} (sub del JWT decodificado con `decodeJwt` de jose). Sección cambio contraseña con PATCH /v1/me/password (UI implementada, backend pendiente). | Fase F10 |
+| Onboarding wizard | `OnboardingBanner` en dashboard/page.tsx: consulta GET /v1/wa-numbers y GET /v1/connector-configs en paralelo (useQuery). Si total=0 en cualquiera → muestra banner dismissable con 3 pasos: número WA, persona IA, conector. Persiste dismiss en `localStorage` con clave `chatpro_onboarding_dismissed`. Se oculta si ambos tienen ítems. | Fase F10 |
+| Unsaved changes ReplyBox | `ReplyBox.tsx`: `useEffect` registra `beforeunload` handler cuando `text.trim()` es no-vacío. Se limpia al limpiar el componente o al enviar el mensaje. | Fase F10 |
+| Timestamps relativos en mensajes | `MessageBubble.tsx`: componente `RelativeTime` usa `formatDistanceToNow` existente + `setInterval` de 60s para refrescar si el mensaje es <1h. `title` con fecha absoluta al hacer hover. | Fase F10 |
+| Audit log table | `app/(app)/audit-log/page.tsx`: GET /v1/audit-log con filtros action/target_type/date_from/date_to + paginación (50 por página). Tabla con columnas fecha/actor/acción/objetivo/IP. Botón export CSV (GET /v1/audit-log/export). `actionVariant()` colorea Badge según tipo de acción. | Fase F10 |
+| Nav F10 | `AppNav.tsx` añade rutas: `/audit-log` (Shield icon), `/settings` (Settings icon). | Fase F10 |
 
 ---
 
-## Prompt de arranque — Fase F10 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F11 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F10 — Frontend: Mejoras UX avanzadas (segunda ronda) + onboarding + configuración tenant.
+Retomo Fase F11 — Frontend: Mejoras de rendimiento + notificaciones push + páginas de error + accesibilidad.
 Contexto:
-- Fase F9 (GDPR export + billing + KB stats + toasts + command palette) completada. PR abierto en rama claude/fase-f9-frontend-LZSSE.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f10-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2-F9 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F9" y este prompt). Nada más.
+- Fase F10 (configuración tenant + onboarding + UX inbox + audit log) completada. PR abierto en rama claude/fase-f10-frontend-7AUyw.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f11-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F10 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F10" y este prompt). Nada más.
 
-Estado tras Fase F9 (ya en rama claude/fase-f9-frontend-LZSSE):
-  A. GDPR Export en dashboard: ExportSection con POST /v1/tenants/me/export + polling status + botón descarga.
-  B. Página /billing: GET /v1/metrics/summary + GET /v1/quotas + GET /v1/metrics (historial).
-     Mini gráfico CSS/barras. Cuotas con barras de progreso. 4 métricas resumen.
-  C. KB Stats en /knowledge: KbStats component con contadores ready/processing/error + desglose PDF vs URL.
-  D. Sistema de Toasts: useToastStore (Zustand) + Toaster component + useToast hook.
-     Integrado en /api-keys, /webhooks, /knowledge. AppShell.tsx con keyboard listener Cmd+K.
-  E. Command Palette: CommandPalette.tsx con búsqueda de contactos + conversaciones.
-     Apertura Cmd+K via AppShell. Navegación con ↑↓ y Enter. Hint ⌘K en AppNav.
-  F. Nav: AppNav añade /billing (CreditCard icon).
+Estado tras Fase F10 (ya en main):
+  A. /settings: perfil usuario (full_name editable via PATCH /v1/users/{sub}), info tenant read-only, cambio contraseña (UI lista, backend pendiente endpoint PATCH /v1/me/password).
+  B. OnboardingBanner en dashboard: 3 pasos (número WA, persona IA, conector), dismissable con localStorage.
+  C. ReplyBox: beforeunload warning cuando hay texto no enviado.
+  D. MessageBubble: timestamps relativos con auto-refresh 60s + title con fecha absoluta.
+  E. /audit-log: tabla con filtros action/target_type/date_from/date_to + paginación + export CSV.
+  F. Nav: AppNav añade /audit-log (Shield) y /settings (Settings).
 
-Opciones a implementar en Fase F10 (en orden A → B → C → D):
-  A. Configuración del tenant (perfil de empresa):
-     - /settings: PATCH /v1/tenants/me con campos nombre_empresa, slug (readonly), plan (readonly).
-     - Cambio de contraseña del usuario actual: PATCH /v1/me/password.
-     - Avatar/logo del tenant (campo logo_url en TenantResponse si existe).
+Opciones a implementar en Fase F11 (en orden A → B → C → D):
+  A. Páginas de error personalizadas:
+     - app/not-found.tsx: 404 con link a /dashboard.
+     - app/error.tsx: error genérico con botón "Reintentar" (reset).
+     - app/(app)/loading.tsx: skeleton de carga para páginas de la app.
 
-  B. Onboarding wizard (primera vez):
-     - Si el tenant no tiene números WA ni conectores → mostrar banner/modal de bienvenida en dashboard.
-     - Pasos: 1) Añadir número WA, 2) Configurar una persona IA, 3) (opcional) Conectar tienda.
-     - Puede ser un simple banner dismissable con links a las páginas relevantes.
+  B. Notificaciones de browser (Web Notifications API):
+     - Pedir permiso de notificaciones en layout de la app.
+     - Cuando llega un WS event conversation.waiting_agent → mostrar notificación de sistema.
+     - Solo si el tab no está activo (document.visibilityState !== "visible").
 
-  C. Mejoras UX inbox:
-     - Unsaved changes warning en ReplyBox: si hay texto en la caja y el usuario navega fuera.
-     - Timestamps relativos en mensajes (Ej: "hace 5 min" usando Intl.RelativeTimeFormat).
-     - Indicador de escritura en ConversationView (si existe endpoint de typing state en el backend).
+  C. Mejoras de accesibilidad:
+     - Focus management: al abrir modales, mover foco al primer elemento interactivo.
+     - Skip-to-content link oculto visible al tab-focus.
+     - aria-live regions en áreas que actualizan dinámicamente (badges de contador, métricas).
 
-  D. Tabla de audit log:
-     - /audit-log: GET /v1/audit-log (ya existe en billing/api.py).
-     - Filtros: action, target_type, date_from, date_to.
-     - Paginación. Columnas: fecha, actor, acción, tipo objetivo, IP.
+  D. Gestión de sesión / seguridad:
+     - Logout automático cuando el token expira (detectar 401 de cualquier request).
+     - Indicador de sesión a punto de expirar (5 min antes) con banner para refrescar.
+     - Contador de sesión activa en /settings.
 
 Reglas:
 - NO tocar src/ Python
-- Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F11
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F12
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 

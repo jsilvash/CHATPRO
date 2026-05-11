@@ -1,9 +1,30 @@
+import { useState, useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { formatDateTime } from "@/lib/date"
+import { formatDateTime, formatDistanceToNow } from "@/lib/date"
 import type { MessageOut } from "@/lib/types"
 
 interface MessageBubbleProps {
   message: MessageOut
+}
+
+function RelativeTime({ isoString }: { isoString: string }) {
+  const date = new Date(isoString)
+  const [relative, setRelative] = useState(() => formatDistanceToNow(date))
+  const absolute = formatDateTime(date)
+
+  // Refrescar cada minuto si el mensaje es reciente (< 1 hora)
+  useEffect(() => {
+    const diffMs = Date.now() - date.getTime()
+    if (diffMs > 60 * 60 * 1000) return // > 1h → solo mostrar absoluto
+    const id = setInterval(() => setRelative(formatDistanceToNow(date)), 60_000)
+    return () => clearInterval(id)
+  }, [isoString]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <time dateTime={isoString} title={absolute}>
+      {relative}
+    </time>
+  )
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
@@ -27,7 +48,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             isOut ? "text-zinc-400 dark:text-zinc-600" : "text-zinc-400",
           )}
         >
-          {formatDateTime(new Date(time))}
+          <RelativeTime isoString={time} />
         </p>
       </div>
     </div>
