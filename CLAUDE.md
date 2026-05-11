@@ -54,6 +54,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
+| F9 | Frontend: GDPR export + billing/uso + KB stats + toasts + Command palette Cmd+K | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -296,53 +297,62 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Menciones @usuario en notas (frontend) | `ConversationView.tsx`: textarea de notas detecta `@query` con regex, muestra autocomplete de agentes disponibles (GET /v1/users/available-agents). `insertMention()` reemplaza el texto antes del cursor. Dropdown posicionado absolutamente sobre el textarea. | Fase F8 |
 | Canned responses en reply (frontend) | `ReplyBox.tsx` acepta `onCannedToggle` + `showCannedActive`. Botón Zap (⚡) toggle muestra picker encima de la caja. Picker: input de búsqueda + lista filtrable de canned responses (GET /v1/canned-responses). Click inserta y envía directamente. | Fase F8 |
 | Nav F8 | `AppNav.tsx` añade rutas: `/knowledge` (BookOpen icon), `/api-keys` (Key icon), `/webhooks` (Webhook icon). | Fase F8 |
+| Toast system | `hooks/use-toast.ts`: `useToastStore` (Zustand) + `useToast()` hook. `components/Toaster.tsx`: lista fija bottom-right, auto-dismiss 4s, variantes default/success/destructive. Incluido en `Providers.tsx`. | Fase F9 |
+| GDPR Export frontend | `ExportSection` en dashboard/page.tsx: POST /v1/tenants/me/export → job.id, polling cada 3s GET /v1/tenants/me/export/{id}/status, cuando done GET /v1/tenants/me/export/{id}/download → href. Toast de éxito/error. | Fase F9 |
+| Billing page frontend | `app/(app)/billing/page.tsx`: GET /v1/metrics/summary (días=30) + GET /v1/quotas + GET /v1/metrics (historial). `QuotaBar` con barra de progreso y % utilizado. `MiniBarChart` CSS puro (flex+div). | Fase F9 |
+| KB Stats frontend | `KbStats` component en /knowledge: calcula totales a partir del array de docs ya cargado (sin endpoint extra). Desglosa ready/processing/error + pdf/url. | Fase F9 |
+| Command Palette | `components/CommandPalette.tsx`: Cmd+K/Ctrl+K via `AppShell.tsx` (client component envuelve layout). Busca contactos (GET /v1/contacts/search) + convs (GET /v1/inbox?search=) en paralelo. Debounce 300ms. Navegación ↑↓/Enter/Esc. Hint ⌘K en AppNav. | Fase F9 |
+| AppShell | `components/AppShell.tsx`: client component que registra el listener Cmd+K y renderiza `CommandPalette`. Envuelve el layout de la app para mantener el layout server-component. | Fase F9 |
+| Nav F9 | `AppNav.tsx` añade ruta: `/billing` (CreditCard icon). | Fase F9 |
 
 ---
 
-## Prompt de arranque — Fase F9 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F10 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F9 — Frontend: Mejoras UX avanzadas + exportación + onboarding.
+Retomo Fase F10 — Frontend: Mejoras UX avanzadas (segunda ronda) + onboarding + configuración tenant.
 Contexto:
-- Fase F8 (panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned) completada. PR abierto en rama claude/fase-f8-frontend-VZP4i.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f9-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2-F8 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F8" y este prompt). Nada más.
+- Fase F9 (GDPR export + billing + KB stats + toasts + command palette) completada. PR abierto en rama claude/fase-f9-frontend-LZSSE.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f10-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F9 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F9" y este prompt). Nada más.
 
-Estado tras Fase F8 (ya en rama claude/fase-f8-frontend-VZP4i):
-  A. Panel Knowledge Base: /knowledge (lista, upload PDF/URL, delete, badges de estado).
-  B. Panel API Keys: /api-keys (lista, crear con scopes, revocar, token mostrado 1 sola vez).
-  C. Panel Webhooks: /webhooks (lista, crear, toggle enabled, delete, secreto mostrado 1 vez).
-  D. Vista contacto mejorada: /contacts/[id] con facts inline edit (hover → pencil), add, delete.
-  E. Menciones @usuario en notas: autocomplete dropdown en textarea de notas de ConversationView.
-  F. Canned responses en reply: botón Zap en ReplyBox, picker filtrable encima de la caja de reply.
-  G. Nav: AppNav añade /knowledge (BookOpen), /api-keys (Key), /webhooks (Webhook).
+Estado tras Fase F9 (ya en rama claude/fase-f9-frontend-LZSSE):
+  A. GDPR Export en dashboard: ExportSection con POST /v1/tenants/me/export + polling status + botón descarga.
+  B. Página /billing: GET /v1/metrics/summary + GET /v1/quotas + GET /v1/metrics (historial).
+     Mini gráfico CSS/barras. Cuotas con barras de progreso. 4 métricas resumen.
+  C. KB Stats en /knowledge: KbStats component con contadores ready/processing/error + desglose PDF vs URL.
+  D. Sistema de Toasts: useToastStore (Zustand) + Toaster component + useToast hook.
+     Integrado en /api-keys, /webhooks, /knowledge. AppShell.tsx con keyboard listener Cmd+K.
+  E. Command Palette: CommandPalette.tsx con búsqueda de contactos + conversaciones.
+     Apertura Cmd+K via AppShell. Navegación con ↑↓ y Enter. Hint ⌘K en AppNav.
+  F. Nav: AppNav añade /billing (CreditCard icon).
 
-Opciones a implementar en Fase F9 (en orden A → B → C → D):
-  A. Exportación GDPR desde el frontend:
-     - Botón "Exportar mis datos" en /users/[user_id] o en /dashboard.
-     - POST /v1/tenants/me/export → muestra estado del job con polling GET /v1/tenants/me/export/{id}/status.
-     - Cuando status=done, botón de descarga: GET /v1/tenants/me/export/{id}/download (URL firmada S3).
+Opciones a implementar en Fase F10 (en orden A → B → C → D):
+  A. Configuración del tenant (perfil de empresa):
+     - /settings: PATCH /v1/tenants/me con campos nombre_empresa, slug (readonly), plan (readonly).
+     - Cambio de contraseña del usuario actual: PATCH /v1/me/password.
+     - Avatar/logo del tenant (campo logo_url en TenantResponse si existe).
 
-  B. Página de billing y uso:
-     - /billing: GET /v1/billing/usage (si existe) o GET /v1/metrics/dashboard para mostrar mensajes, LLM cost.
-     - Cuotas: messages_limit, conversations_limit, documents_limit por plan.
-     - Historial de métricas: gráfico simple (bars o líneas) de uso diario/semanal.
+  B. Onboarding wizard (primera vez):
+     - Si el tenant no tiene números WA ni conectores → mostrar banner/modal de bienvenida en dashboard.
+     - Pasos: 1) Añadir número WA, 2) Configurar una persona IA, 3) (opcional) Conectar tienda.
+     - Puede ser un simple banner dismissable con links a las páginas relevantes.
 
-  C. Vista global de estadísticas de la KB:
-     - En /knowledge: añadir sección "Estadísticas" con total documentos, chunks, estado de ingestión.
-     - Contador de documentos por tipo (PDF vs URL).
-     - Estado: cuántos ready / processing / error.
+  C. Mejoras UX inbox:
+     - Unsaved changes warning en ReplyBox: si hay texto en la caja y el usuario navega fuera.
+     - Timestamps relativos en mensajes (Ej: "hace 5 min" usando Intl.RelativeTimeFormat).
+     - Indicador de escritura en ConversationView (si existe endpoint de typing state en el backend).
 
-  D. Mejoras UX generales:
-     - Toast notifications para acciones CRUD (crear, eliminar, error).
-     - Confirmar antes de salir si hay unsaved changes en formularios largos.
-     - Búsqueda global en nav (Command palette con Cmd+K) que busca contactos + conversaciones.
+  D. Tabla de audit log:
+     - /audit-log: GET /v1/audit-log (ya existe en billing/api.py).
+     - Filtros: action, target_type, date_from, date_to.
+     - Paginación. Columnas: fecha, actor, acción, tipo objetivo, IP.
 
 Reglas:
 - NO tocar src/ Python
 - Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F10
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F11
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 

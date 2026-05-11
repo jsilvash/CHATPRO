@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
-import { apiGet, API_URL } from "@/lib/api"
-import type { TenantMetricsDashboard, StreamMetrics } from "@/lib/types"
+import { apiGet, apiFetch, API_URL } from "@/lib/api"
+import type { TenantMetricsDashboard, StreamMetrics, ExportJobOut, ExportStatusOut } from "@/lib/types"
 import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import {
   MessageSquare,
   Bot,
@@ -14,8 +15,13 @@ import {
   AlertCircle,
   RefreshCw,
   Radio,
+  Download,
+  Loader2,
+  CheckCircle2,
+  ExternalLink,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useToast } from "@/hooks/use-toast"
 
 function MetricCard({
   title,
@@ -97,6 +103,101 @@ function useMetricsSSE(onUpdate: (m: StreamMetrics) => void) {
   }, [onUpdate])
 
   return { sseActive }
+}
+
+// ── GDPR Export ────────────────────────────────────────────────────────────────
+
+function ExportSection() {
+  const [job, setJob] = useState<ExportJobOut | null>(null)
+  const [polling, setPolling] = useState(false)
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
+  const { success, error: toastError } = useToast()
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  async function startExport() {
+    try {
+      const j = await apiFetch<ExportJobOut>("/v1/tenants/me/export", { method: "POST" })
+      setJob(j)
+      setDownloadUrl(null)
+      setPolling(true)
+    } catch (e) {
+      toastError("Error al iniciar exportación", e instanceof Error ? e.message : undefined)
+    }
+  }
+
+  useEffect(() => {
+    if (!polling || !job) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await apiGet<ExportStatusOut>(`/v1/tenants/me/export/${job.id}/status`)
+        setJob((prev) => prev ? { ...prev, status: status.status, error: status.error } : prev)
+        if (status.status === "done") {
+          setPolling(false)
+          clearInterval(pollRef.current!)
+          const dl = await apiGet<{ url: string }>(`/v1/tenants/me/export/${job.id}/download`)
+          setDownloadUrl(dl.url)
+          success("Exportación lista", "Tu archivo ZIP está listo para descargar.")
+        } else if (status.status === "error") {
+          setPolling(false)
+          clearInterval(pollRef.current!)
+          toastError("Error en exportación", status.error ?? undefined)
+        }
+      } catch {
+        // ignorar error transitorio
+      }
+    }, 3000)
+    return () => clearInterval(pollRef.current!)
+  }, [polling, job, success, toastError])
+
+  return (
+    <Card>
+      <CardContent className="pt-5 pb-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">Exportar datos (GDPR)</p>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              Descarga un ZIP con todos tus contactos, mensajes y pedidos.
+            </p>
+            {job && job.status === "error" && (
+              <p className="text-xs text-red-500 mt-1">{job.error ?? "Error desconocido"}</p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {polling && (
+              <span className="flex items-center gap-1 text-xs text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                {job?.status === "running" ? "Generando..." : "En cola..."}
+              </span>
+            )}
+            {downloadUrl ? (
+              <Button size="sm" asChild className="h-7 text-xs gap-1">
+                <a href={downloadUrl} target="_blank" rel="noopener noreferrer">
+                  <Download className="w-3.5 h-3.5" />
+                  Descargar
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={startExport}
+                disabled={polling}
+                className="h-7 text-xs gap-1"
+              >
+                {job?.status === "done" && !downloadUrl ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" />
+                )}
+                Exportar datos
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 // ── Página ─────────────────────────────────────────────────────────────────────
@@ -294,6 +395,8 @@ export default function DashboardPage() {
           ? "Métricas de mensajes y conversaciones activas actualizadas en tiempo real via SSE."
           : "Se actualiza automáticamente cada 30 segundos."}
       </p>
+
+      <ExportSection />
     </div>
   )
 }
