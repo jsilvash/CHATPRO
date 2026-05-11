@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
-import { UserCheck, X, Tag, Plus, Trash2, FileText, History, ChevronDown, ChevronUp } from "lucide-react"
+import { UserCheck, X, Tag, Plus, Trash2, FileText, History, ChevronDown, ChevronUp, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -14,7 +14,7 @@ import { ReplyBox } from "./ReplyBox"
 import { apiFetch, apiGet, API_URL } from "@/lib/api"
 import { useConversationSocket } from "@/hooks/use-conversation-socket"
 import { formatDateTime } from "@/lib/date"
-import type { ConversationDetail, MessageOut, NoteOut, ConversationStatusHistoryEntry } from "@/lib/types"
+import type { ConversationDetail, MessageOut, NoteOut, ConversationStatusHistoryEntry, AvailableAgent, CannedResponseOut } from "@/lib/types"
 
 const STATUS_VARIANTS: Record<string, "default" | "secondary" | "success" | "warning" | "info"> = {
   bot: "secondary",
@@ -45,6 +45,14 @@ export function ConversationView({ convId }: ConversationViewProps) {
   const [addingNote, setAddingNote] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
 
+  // Menciones @usuario
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
+  const noteRef = useRef<HTMLTextAreaElement>(null)
+
+  // Canned responses
+  const [showCanned, setShowCanned] = useState(false)
+  const [cannedSearch, setCannedSearch] = useState("")
+
   // Carga detalle de la conversación
   const { data, isLoading, error } = useQuery<ConversationDetail>({
     queryKey: ["conversation", convId],
@@ -63,6 +71,20 @@ export function ConversationView({ convId }: ConversationViewProps) {
     queryKey: ["conversation-status-history", convId],
     queryFn: () => apiGet<ConversationStatusHistoryEntry[]>(`/v1/inbox/${convId}/status-history`),
     enabled: showHistory,
+  })
+
+  // Agentes disponibles para menciones
+  const { data: agentsData } = useQuery<{ items: AvailableAgent[]; total: number }>({
+    queryKey: ["available-agents"],
+    queryFn: () => apiGet<{ items: AvailableAgent[]; total: number }>("/v1/users/available-agents"),
+    staleTime: 60_000,
+  })
+
+  // Canned responses para reply box
+  const { data: cannedData } = useQuery<{ items: CannedResponseOut[]; total: number }>({
+    queryKey: ["canned-responses-list"],
+    queryFn: () => apiGet<{ items: CannedResponseOut[]; total: number }>("/v1/canned-responses"),
+    staleTime: 60_000,
   })
 
   // Sincroniza mensajes iniciales
@@ -149,6 +171,7 @@ export function ConversationView({ convId }: ConversationViewProps) {
       qc.invalidateQueries({ queryKey: ["conversation-notes", convId] })
       setNewNote("")
       setAddingNote(false)
+      setMentionQuery(null)
     },
   })
 
@@ -157,6 +180,53 @@ export function ConversationView({ convId }: ConversationViewProps) {
       apiFetch(`/v1/inbox/${convId}/notes/${noteId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversation-notes", convId] }),
   })
+
+  // Detecta @mención al escribir notas
+  function handleNoteChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const val = e.target.value
+    setNewNote(val)
+
+    const cursor = e.target.selectionStart
+    const textBefore = val.slice(0, cursor)
+    const mentionMatch = textBefore.match(/@([\w.]*)$/)
+    if (mentionMatch) {
+      setMentionQuery(mentionMatch[1].toLowerCase())
+    } else {
+      setMentionQuery(null)
+    }
+  }
+
+  function insertMention(agent: AvailableAgent) {
+    const el = noteRef.current
+    if (!el) return
+    const cursor = el.selectionStart
+    const before = newNote.slice(0, cursor)
+    const after = newNote.slice(cursor)
+    const mentionStart = before.lastIndexOf("@")
+    const newText = before.slice(0, mentionStart) + `@${agent.email} ` + after
+    setNewNote(newText)
+    setMentionQuery(null)
+    setTimeout(() => {
+      el.focus()
+      const pos = mentionStart + agent.email.length + 2
+      el.setSelectionRange(pos, pos)
+    }, 0)
+  }
+
+  const filteredAgents = mentionQuery != null
+    ? (agentsData?.items ?? []).filter(
+        (a) =>
+          a.email.toLowerCase().includes(mentionQuery) ||
+          a.full_name.toLowerCase().includes(mentionQuery)
+      ).slice(0, 5)
+    : []
+
+  const filteredCanned = (cannedData?.items ?? []).filter(
+    (c) =>
+      !cannedSearch ||
+      c.shortcode.toLowerCase().includes(cannedSearch.toLowerCase()) ||
+      c.text.toLowerCase().includes(cannedSearch.toLowerCase())
+  ).slice(0, 8)
 
   async function handleSend(text: string) {
     const result = await replyMut.mutateAsync(text)
@@ -243,8 +313,52 @@ export function ConversationView({ convId }: ConversationViewProps) {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Canned responses picker */}
+        {showCanned && (
+          <div className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-4 py-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Input
+                placeholder="Buscar respuesta rápida..."
+                value={cannedSearch}
+                onChange={(e) => setCannedSearch(e.target.value)}
+                className="h-7 text-xs flex-1"
+                autoFocus
+              />
+              <Button size="sm" variant="ghost" onClick={() => setShowCanned(false)} className="h-7 w-7 p-0">
+                <X className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+            <div className="space-y-0.5 max-h-40 overflow-y-auto">
+              {filteredCanned.length === 0 ? (
+                <p className="text-xs text-zinc-400 py-2 text-center">Sin resultados</p>
+              ) : (
+                filteredCanned.map((cr) => (
+                  <button
+                    key={cr.id}
+                    onClick={() => {
+                      // Enviamos directamente la respuesta canned
+                      handleSend(cr.text)
+                      setShowCanned(false)
+                      setCannedSearch("")
+                    }}
+                    className="w-full text-left px-2 py-1.5 rounded hover:bg-zinc-50 dark:hover:bg-zinc-800 flex items-start gap-2"
+                  >
+                    <code className="text-xs font-mono text-blue-500 shrink-0">/{cr.shortcode}</code>
+                    <span className="text-xs text-zinc-600 dark:text-zinc-400 truncate">{cr.text}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Reply box */}
-        <ReplyBox onSend={handleSend} disabled={!canReply} />
+        <ReplyBox
+          onSend={handleSend}
+          disabled={!canReply}
+          onCannedToggle={() => setShowCanned((v) => !v)}
+          showCannedActive={showCanned}
+        />
       </div>
 
       {/* Panel derecho: info lateral */}
@@ -349,18 +463,34 @@ export function ConversationView({ convId }: ConversationViewProps) {
           </div>
 
           {addingNote && (
-            <div className="mb-3 space-y-1">
+            <div className="mb-3 space-y-1 relative">
               <Textarea
-                placeholder="Escribe una nota..."
+                ref={noteRef}
+                placeholder="Escribe una nota... (usa @email para mencionar)"
                 value={newNote}
-                onChange={(e) => setNewNote(e.target.value)}
+                onChange={handleNoteChange}
                 className="text-xs min-h-[60px] resize-none"
               />
+              {/* Autocomplete de menciones */}
+              {filteredAgents.length > 0 && (
+                <div className="absolute z-10 left-0 right-0 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded shadow-lg overflow-hidden">
+                  {filteredAgents.map((agent) => (
+                    <button
+                      key={agent.id}
+                      onMouseDown={(e) => { e.preventDefault(); insertMention(agent) }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-zinc-50 dark:hover:bg-zinc-800 flex items-center gap-2"
+                    >
+                      <span className="font-medium text-zinc-700 dark:text-zinc-300">{agent.full_name}</span>
+                      <span className="text-zinc-400">{agent.email}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="flex justify-end gap-1">
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => { setAddingNote(false); setNewNote("") }}
+                  onClick={() => { setAddingNote(false); setNewNote(""); setMentionQuery(null) }}
                   className="h-6 text-xs px-2"
                 >
                   Cancelar

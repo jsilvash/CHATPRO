@@ -53,6 +53,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F5 | Frontend: Números WA + personas IA + filtros inbox avanzados | ✅ PR abierto |
 | F6 | Frontend: Office hours + asignación persona WA + métricas agente + historial status | ✅ PR abierto |
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
+| F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -283,66 +284,65 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Métricas agente por período (frontend) | `/users/[user_id]/page.tsx` añade sección "Métricas por período" con filtros date_from/date_to + botón "Calcular". Llama `GET /v1/users/{id}/metrics`. Muestra: conversations_handled, avg_first_response_sec, avg_resolution_sec, messages_sent, notes_created, busiest_hour. | Fase F6 |
 | Historial de status (frontend) | `ConversationView.tsx` añade sección colapsable "Historial" en panel lateral. Carga `GET /v1/inbox/{id}/status-history` bajo demanda (enabled=showHistory). Muestra timeline con old_status → new_status + timestamp. | Fase F6 |
 | Nav F6 | `AppNav.tsx` añade ruta: `/office-hours` (Clock3 icon). | Fase F6 |
-| Bulk actions inbox (frontend) | `InboxList.tsx`: toggle "Selección múltiple" activa `selectionMode`. `ConversationCard` muestra checkbox cuando `selectionMode=true`. Barra flotante absoluta en la parte inferior con: bulk-assign (select agente), bulk-tag (input), bulk-close. POST a `/v1/inbox/bulk-assign`, `/v1/inbox/bulk-tag`, `/v1/inbox/bulk-close`. | Fase F7 |
-| Agentes mejorado (frontend) | `/users/agents/page.tsx`: filtros date_from/date_to + botón "Calcular métricas". `Promise.all` de `GET /v1/users/{id}/metrics` para todos los agentes. Toggle entre vista de carga (LoadBar) y tabla comparativa (conv. activas, resueltas, t. primera respuesta, t. resolución, mensajes). | Fase F7 |
-| Office hours grid semanal | `app/(app)/office-hours/page.tsx`: toggle List/LayoutGrid. Grid 7 días × 24 horas. `coverageMap[day][hour]` calculado de registros `is_active=true`. Celda verde si cubierta, gris si no. Leyenda al pie. Estado `gridView` local (no persiste). | Fase F7 |
-| Overdue inbox UX | Hook `hooks/use-overdue.ts`: polling cada 60s a `GET /v1/inbox/overdue?threshold_minutes=30`. `AppNav.tsx` muestra badge rojo "N!" en link `/inbox`. `InboxList` filtro "Solo vencidas" en panel filtros: query usa endpoint overdue en lugar del inbox normal. `ConversationSummary.waiting_minutes: number | null` añadido al tipo. | Fase F7 |
+| Bulk actions inbox (frontend) | `InboxList.tsx`: checkbox de selección múltiple en `ConversationCard` (modo bulk activado por toggle). Barra flotante cuando hay selección: bulk-assign (select agente), bulk-tag (input), bulk-close (confirm). POST /v1/inbox/bulk-assign, /bulk-tag, /bulk-close. | Fase F7 |
+| Agentes mejorado (frontend) | `/users/agents`: filtros date_from/date_to + tabla comparativa con métricas. GET /v1/users/{id}/metrics en paralelo para todos los agentes. Toggle lista/tabla. | Fase F7 |
+| Office hours grid semanal (frontend) | `/office-hours`: toggle List/LayoutGrid. Grid 7 días × 24 horas con celdas coloreadas (verde=cubierto, gris=sin cobertura). | Fase F7 |
+| Overdue UX (frontend) | `useOverdueCount` hook: polling 60s a GET /v1/inbox/overdue?threshold_minutes=30. Badge rojo con "N!" en link /inbox del nav. Filtro "Solo vencidas" en InboxList. | Fase F7 |
+| Nav F7 | `AppNav.tsx` no añade rutas nuevas en F7 (features dentro de páginas existentes). | Fase F7 |
+| Panel Knowledge Base (frontend) | `app/(app)/knowledge/page.tsx`: lista documentos (GET /v1/knowledge), upload PDF (multipart a POST /v1/knowledge/upload), ingestión URL (mismo endpoint con campo url), DELETE /v1/knowledge/{id} con confirm. Estado: ready/processing/error con badge. | Fase F8 |
+| Panel API Keys (frontend) | `app/(app)/api-keys/page.tsx`: lista (GET /v1/api-keys), crear (POST con name+scopes), revocar (DELETE). Token mostrado UNA sola vez tras crear, con botón de copy. Filtro incluir-revocadas. | Fase F8 |
+| Panel Webhooks (frontend) | `app/(app)/webhooks/page.tsx`: lista (GET /v1/webhooks), crear (POST con url+events+secret), toggle enabled (PUT), eliminar (DELETE). Secreto HMAC mostrado una sola vez. Eventos: message.received/sent, conversation.escalated/closed. | Fase F8 |
+| Vista contacto mejorada (frontend) | `/contacts/[id]`: facts con key/value/source/confidence visibles. Edición inline por fila (hover → pencil icon). Nuevo hecho con form key+value. DELETE con confirm. PUT /v1/contacts/{id}/facts/{key}, DELETE /v1/contacts/{id}/facts/{key}. | Fase F8 |
+| Menciones @usuario en notas (frontend) | `ConversationView.tsx`: textarea de notas detecta `@query` con regex, muestra autocomplete de agentes disponibles (GET /v1/users/available-agents). `insertMention()` reemplaza el texto antes del cursor. Dropdown posicionado absolutamente sobre el textarea. | Fase F8 |
+| Canned responses en reply (frontend) | `ReplyBox.tsx` acepta `onCannedToggle` + `showCannedActive`. Botón Zap (⚡) toggle muestra picker encima de la caja. Picker: input de búsqueda + lista filtrable de canned responses (GET /v1/canned-responses). Click inserta y envía directamente. | Fase F8 |
+| Nav F8 | `AppNav.tsx` añade rutas: `/knowledge` (BookOpen icon), `/api-keys` (Key icon), `/webhooks` (Webhook icon). | Fase F8 |
 
 ---
 
-## Prompt de arranque — Fase F8 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F9 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F8 — Frontend: Notificaciones en tiempo real mejoradas + tags avanzados + panel KB.
+Retomo Fase F9 — Frontend: Mejoras UX avanzadas + exportación + onboarding.
 Contexto:
-- Fase F7 (bulk actions inbox + agentes mejorado + office hours grid + overdue UX) completada. PR abierto en rama claude/fase-f7-frontend-VUoST.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f8-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2/F3/F4/F5/F6/F7 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F7" y este prompt). Nada más.
+- Fase F8 (panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned) completada. PR abierto en rama claude/fase-f8-frontend-VZP4i.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f9-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F8 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F8" y este prompt). Nada más.
 
-Estado tras Fase F7 (ya en rama claude/fase-f7-frontend-VUoST):
-  A. Bulk actions inbox:
-     - Checkboxes en ConversationCard (modo selección múltiple activado por toggle en InboxList).
-     - Barra flotante con: bulk-assign (select agente + OK), bulk-tag (input + OK), bulk-close (confirm).
-     - POST /v1/inbox/bulk-assign, /bulk-tag, /bulk-close desde InboxList.
-  B. Agentes mejorado (/users/agents):
-     - Filtros date_from/date_to con botón "Calcular métricas".
-     - Tabla comparativa: conv. activas, resueltas período, t. primera respuesta, t. resolución, mensajes.
-     - GET /v1/users/{id}/metrics en paralelo para todos. Toggle lista/tabla.
-  C. Office hours grid semanal:
-     - Toggle List/LayoutGrid en /office-hours. Grid 7 días × 24 horas con celdas coloreadas.
-     - Verde=cubierto (is_active), gris=sin cobertura. Leyenda al pie.
-  D. Overdue inbox UX:
-     - Hook useOverdueCount: polling 60s a GET /v1/inbox/overdue?threshold_minutes=30.
-     - Badge rojo con "N!" en link /inbox del nav.
-     - Filtro "Solo vencidas" en panel filtros avanzados de InboxList.
+Estado tras Fase F8 (ya en rama claude/fase-f8-frontend-VZP4i):
+  A. Panel Knowledge Base: /knowledge (lista, upload PDF/URL, delete, badges de estado).
+  B. Panel API Keys: /api-keys (lista, crear con scopes, revocar, token mostrado 1 sola vez).
+  C. Panel Webhooks: /webhooks (lista, crear, toggle enabled, delete, secreto mostrado 1 vez).
+  D. Vista contacto mejorada: /contacts/[id] con facts inline edit (hover → pencil), add, delete.
+  E. Menciones @usuario en notas: autocomplete dropdown en textarea de notas de ConversationView.
+  F. Canned responses en reply: botón Zap en ReplyBox, picker filtrable encima de la caja de reply.
+  G. Nav: AppNav añade /knowledge (BookOpen), /api-keys (Key), /webhooks (Webhook).
 
-Opciones a implementar en Fase F8 (en orden A → B → C → D):
-  A. Panel de Knowledge Base:
-     - /knowledge página nueva con lista de documentos (GET /v1/knowledge/documents).
-     - Upload PDF (POST /v1/knowledge/documents con multipart) + ingestión de URL.
-     - DELETE documento + estado de ingestión.
-     - Búsqueda RAG (GET /v1/knowledge/search?q=) con resultados y score.
+Opciones a implementar en Fase F9 (en orden A → B → C → D):
+  A. Exportación GDPR desde el frontend:
+     - Botón "Exportar mis datos" en /users/[user_id] o en /dashboard.
+     - POST /v1/tenants/me/export → muestra estado del job con polling GET /v1/tenants/me/export/{id}/status.
+     - Cuando status=done, botón de descarga: GET /v1/tenants/me/export/{id}/download (URL firmada S3).
 
-  B. Panel API keys y webhooks:
-     - /api-keys: CRUD (GET /v1/api-keys, POST, DELETE).
-     - /webhooks: CRUD (GET /v1/webhooks, POST, PATCH, DELETE).
-     - Mostrar campos: url, events, secret (parcialmente oculto), active.
+  B. Página de billing y uso:
+     - /billing: GET /v1/billing/usage (si existe) o GET /v1/metrics/dashboard para mostrar mensajes, LLM cost.
+     - Cuotas: messages_limit, conversations_limit, documents_limit por plan.
+     - Historial de métricas: gráfico simple (bars o líneas) de uso diario/semanal.
 
-  C. Vista de contacto mejorada:
-     - /contacts/[id] muestra facts del contacto (key/value/source/confidence).
-     - Opción de añadir/editar/eliminar facts inline.
-     - Historial de pedidos: si existe connector, mostrar orders vinculados.
+  C. Vista global de estadísticas de la KB:
+     - En /knowledge: añadir sección "Estadísticas" con total documentos, chunks, estado de ingestión.
+     - Contador de documentos por tipo (PDF vs URL).
+     - Estado: cuántos ready / processing / error.
 
-  D. Mejoras inbox conversación:
-     - Panel de notas internas en ConversationView (ya existe API).
-     - Menciones @usuario en notas (autocomplete con /v1/users/available-agents).
-     - Canned responses en el campo de reply: botón "Respuestas rápidas" que abre lista filtrable.
+  D. Mejoras UX generales:
+     - Toast notifications para acciones CRUD (crear, eliminar, error).
+     - Confirmar antes de salir si hay unsaved changes en formularios largos.
+     - Búsqueda global en nav (Command palette con Cmd+K) que busca contactos + conversaciones.
 
 Reglas:
 - NO tocar src/ Python
 - Arrancar dev server y probar manualmente antes de reportar listo
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F9
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F10
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 
