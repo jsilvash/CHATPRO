@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { apiFetch, apiGet } from "@/lib/api"
 import { formatDateTime } from "@/lib/date"
 import type { ApiKeyOut } from "@/lib/types"
+import { useToast } from "@/hooks/use-toast"
 
 interface ApiKeyCreated extends ApiKeyOut {
   token: string
@@ -23,6 +24,7 @@ const SCOPE_LABELS: Record<string, string> = {
 
 export default function ApiKeysPage() {
   const qc = useQueryClient()
+  const { success, error: toastError } = useToast()
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState("")
   const [scopes, setScopes] = useState<string[]>(["read"])
@@ -50,8 +52,13 @@ export default function ApiKeysPage() {
       setName("")
       setScopes(["read"])
       setError(null)
+      success("API Key creada", "Copia el token ahora — no se volverá a mostrar.")
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "Error al crear API key"),
+    onError: (e) => {
+      const msg = e instanceof Error ? e.message : "Error al crear API key"
+      setError(msg)
+      toastError("Error al crear API key", msg)
+    },
   })
 
   const deleteMut = useMutation({
@@ -60,7 +67,9 @@ export default function ApiKeysPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["api-keys"] })
       setDeleteConfirm(null)
+      success("API Key revocada")
     },
+    onError: (e) => toastError("Error al revocar", e instanceof Error ? e.message : undefined),
   })
 
   async function copyToken() {

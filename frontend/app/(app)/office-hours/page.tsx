@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Clock, Plus, Trash2, Pencil, Check, X, AlertCircle, Clock3 } from "lucide-react"
+import { Clock, Plus, Trash2, Pencil, Check, X, AlertCircle, Clock3, LayoutGrid, List } from "lucide-react"
 
 const DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 
@@ -239,6 +239,15 @@ export default function OfficeHoursPage() {
 
   // Agrupar por día para mejor visualización
   const byDay = DAYS.map((_, day) => records.filter(r => r.day_of_week === day))
+  const [gridView, setGridView] = useState(false)
+
+  // Construir mapa de cobertura para el grid: day → set of covered hours
+  const coverageMap: boolean[][] = DAYS.map((_, day) => {
+    const dayRecs = records.filter(r => r.day_of_week === day && r.is_active)
+    return Array.from({ length: 24 }, (_, h) =>
+      dayRecs.some(r => h >= r.hour_start && h < r.hour_end)
+    )
+  })
 
   return (
     <div className="p-6 space-y-6 max-w-5xl">
@@ -252,10 +261,28 @@ export default function OfficeHoursPage() {
             </p>
           </div>
         </div>
-        <Button onClick={() => setCreating(v => !v)} size="sm" className="gap-1.5">
-          <Plus className="w-3.5 h-3.5" />
-          Nuevo horario
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border border-zinc-200 dark:border-zinc-700 overflow-hidden">
+            <button
+              onClick={() => setGridView(false)}
+              className={`p-1.5 transition-colors ${!gridView ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50" : "text-zinc-400 hover:text-zinc-600"}`}
+              title="Vista lista"
+            >
+              <List className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setGridView(true)}
+              className={`p-1.5 transition-colors ${gridView ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50" : "text-zinc-400 hover:text-zinc-600"}`}
+              title="Vista semanal"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <Button onClick={() => setCreating(v => !v)} size="sm" className="gap-1.5">
+            <Plus className="w-3.5 h-3.5" />
+            Nuevo horario
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -363,7 +390,7 @@ export default function OfficeHoursPage() {
         </Card>
       )}
 
-      {/* Tabla de horarios */}
+      {/* Vista de horarios */}
       {loading ? (
         <div className="animate-pulse space-y-2">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -378,7 +405,63 @@ export default function OfficeHoursPage() {
             Sin horarios activos, el bot atiende siempre.
           </p>
         </div>
+      ) : gridView ? (
+        /* Vista cuadrícula semanal */
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Cobertura semanal (horarios activos)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 pb-4">
+            <div className="overflow-x-auto px-4">
+              <div className="flex gap-0 min-w-[700px]">
+                {/* Columna de horas */}
+                <div className="flex flex-col pt-7 shrink-0">
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <div key={h} className="h-5 flex items-center pr-1.5">
+                      <span className="text-[10px] text-zinc-400 w-7 text-right">{String(h).padStart(2, "0")}h</span>
+                    </div>
+                  ))}
+                </div>
+                {/* Columnas por día */}
+                {DAYS.map((day, dayIdx) => (
+                  <div key={dayIdx} className="flex-1 min-w-0">
+                    <div className="h-7 flex items-center justify-center">
+                      <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">{day.slice(0, 3)}</span>
+                    </div>
+                    <div className="flex flex-col gap-px">
+                      {coverageMap[dayIdx].map((covered, h) => (
+                        <div
+                          key={h}
+                          className={`h-5 mx-0.5 rounded-sm transition-colors ${
+                            covered
+                              ? "bg-green-400 dark:bg-green-600"
+                              : "bg-zinc-100 dark:bg-zinc-800"
+                          }`}
+                          title={`${day} ${String(h).padStart(2, "0")}:00${covered ? " — Cubierto" : ""}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Leyenda */}
+              <div className="flex items-center gap-4 mt-3 pl-9">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-sm bg-green-400 dark:bg-green-600" />
+                  <span className="text-xs text-zinc-500">Cubierto (bot activo)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-sm bg-zinc-100 dark:bg-zinc-800" />
+                  <span className="text-xs text-zinc-500">Sin cobertura</span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       ) : (
+        /* Vista lista (tabla) */
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">

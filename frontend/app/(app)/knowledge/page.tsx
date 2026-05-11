@@ -2,13 +2,14 @@
 
 import { useState, useRef } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { BookOpen, Upload, Link2, Trash2, Loader2, AlertCircle, Plus, X, FileText, Globe } from "lucide-react"
+import { BookOpen, Upload, Link2, Trash2, Loader2, AlertCircle, Plus, X, FileText, Globe, BarChart3, CheckCircle2, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { apiFetch, apiGet, API_URL } from "@/lib/api"
 import type { KbDocumentOut } from "@/lib/types"
+import { useToast } from "@/hooks/use-toast"
 
 const STATUS_LABEL: Record<string, string> = {
   ready: "Listo",
@@ -26,6 +27,69 @@ const STATUS_VARIANT: Record<string, "success" | "warning" | "destructive" | "se
 
 type UploadMode = "pdf" | "url" | null
 
+function KbStats({ docs }: { docs: KbDocumentOut[] }) {
+  const total = docs.length
+  const byStatus = {
+    ready: docs.filter((d) => d.status === "ready").length,
+    processing: docs.filter((d) => d.status === "processing" || d.status === "pending").length,
+    error: docs.filter((d) => d.status === "error").length,
+  }
+  const byType = {
+    pdf: docs.filter((d) => d.source_type === "pdf").length,
+    url: docs.filter((d) => d.source_type === "url").length,
+  }
+
+  if (total === 0) return null
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <BarChart3 className="w-4 h-4 text-zinc-400" />
+          Estadísticas de la base de conocimiento
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+          <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-800">
+            <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">{total}</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Total docs</p>
+          </div>
+          <div className="p-3 rounded-lg bg-green-50 dark:bg-green-900/20">
+            <p className="text-2xl font-bold text-green-700 dark:text-green-400 flex items-center justify-center gap-1">
+              <CheckCircle2 className="w-4 h-4" />{byStatus.ready}
+            </p>
+            <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">Listos</p>
+          </div>
+          <div className="p-3 rounded-lg bg-yellow-50 dark:bg-yellow-900/20">
+            <p className="text-2xl font-bold text-yellow-700 dark:text-yellow-400 flex items-center justify-center gap-1">
+              <Clock className="w-4 h-4" />{byStatus.processing}
+            </p>
+            <p className="text-xs text-yellow-600 dark:text-yellow-500 mt-0.5">Procesando</p>
+          </div>
+          <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20">
+            <p className="text-2xl font-bold text-red-700 dark:text-red-400 flex items-center justify-center gap-1">
+              <AlertCircle className="w-4 h-4" />{byStatus.error}
+            </p>
+            <p className="text-xs text-red-600 dark:text-red-500 mt-0.5">Con error</p>
+          </div>
+        </div>
+
+        <div className="flex gap-4 mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-800">
+          <div className="flex items-center gap-2 text-sm">
+            <FileText className="w-4 h-4 text-blue-400" />
+            <span className="text-zinc-600 dark:text-zinc-400">{byType.pdf} PDF{byType.pdf !== 1 ? "s" : ""}</span>
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <Globe className="w-4 h-4 text-green-400" />
+            <span className="text-zinc-600 dark:text-zinc-400">{byType.url} URL{byType.url !== 1 ? "s" : ""}</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function KnowledgePage() {
   const qc = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -36,6 +100,7 @@ export default function KnowledgePage() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+  const { success, error: toastError } = useToast()
 
   const { data: docs, isLoading } = useQuery<KbDocumentOut[]>({
     queryKey: ["knowledge-docs"],
@@ -49,7 +114,9 @@ export default function KnowledgePage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["knowledge-docs"] })
       setDeleteConfirm(null)
+      success("Documento eliminado")
     },
+    onError: (e) => toastError("Error al eliminar", e instanceof Error ? e.message : undefined),
   })
 
   async function handleUpload() {
@@ -94,8 +161,10 @@ export default function KnowledgePage() {
       setTitle("")
       setUrl("")
       setFile(null)
+      success("Documento añadido", "Está siendo procesado en segundo plano.")
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Error al subir documento")
+      toastError("Error al subir documento")
     } finally {
       setUploading(false)
     }
@@ -218,6 +287,9 @@ export default function KnowledgePage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Estadísticas KB */}
+      {docs && docs.length > 0 && <KbStats docs={docs} />}
 
       {/* Lista de documentos */}
       {isLoading ? (
