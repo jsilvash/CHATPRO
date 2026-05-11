@@ -55,6 +55,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | F7 | Frontend: Bulk actions inbox + agentes mejorado + office hours grid + overdue UX | ✅ PR abierto |
 | F8 | Frontend: Panel KB + API keys/webhooks + contacto mejorado + inbox menciones/canned | ✅ PR abierto |
 | F11 | Frontend: Páginas de error + notificaciones browser + accesibilidad + gestión de sesión | ✅ PR abierto |
+| F12 | Frontend: Dark mode + responsive móvil + rendimiento + empty states | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -301,52 +302,58 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Notificaciones de browser | `use-notifications.ts`: `sendBrowserNotification()` para `conversation.waiting_agent` — solo cuando `document.visibilityState !== "visible"` y permiso granted. `requestNotificationPermission()` exportada. `NotificationPermissionRequester`: cliente que pide permiso tras 3s de mount, integrado en `app/(app)/layout.tsx`. | Fase F11 |
 | Accesibilidad | `SkipToContent`: link oculto (`sr-only`) con `focus:not-sr-only` que salta a `#main-content`. Añadido en root layout. `main#main-content` con `tabIndex={-1}` en app layout. Badge de inbox envuelto en `<span aria-live="polite" aria-label="...">` en AppNav. | Fase F11 |
 | Gestión de sesión | `use-session-expiry.ts`: hook que compara `tokenExp` (Unix) con `Date.now()` cada 10s. Retorna `status: "ok" | "expiring_soon" | "expired"` y `secondsLeft`. `SessionExpiryBanner`: banner amber cuando quedan <5min (botón "Extender sesión" → `POST /api/auth/refresh`), banner rojo al expirar (link logout). Integrado en app layout entre AppNav y main. | Fase F11 |
+| Dark mode toggle | `components/ThemeProvider.tsx`: contexto React con `theme: light\|dark\|system`. Persiste en `localStorage["chatpro-theme"]`. En "system" detecta `matchMedia("prefers-color-scheme: dark")` y escucha cambios. Aplica/quita clase `.dark` en `document.documentElement`. `@custom-variant dark (&:where(.dark, .dark *))` en globals.css. CSS variables en selector `.dark` (no media query). `suppressHydrationWarning` en root `<html>`. Incluido en `Providers.tsx`. Toggle Sun/Moon/Monitor en footer de AppNav. | Fase F12 |
+| Responsive móvil AppNav | `AppNav.tsx`: estado `mobileOpen`. Botón hamburger `<button fixed z-40>` visible solo en `<md` (hidden en `md:`). Overlay backdrop `<div fixed inset-0 bg-black/40>` cuando open. Nav con `fixed inset-y-0 left-0 w-64 -translate-x-full md:translate-x-0` en móvil vs `md:relative md:w-56` en desktop. `app/(app)/layout.tsx` añade `pt-12 md:pt-0` en `<main>` para el botón hamburger. | Fase F12 |
+| EmptyState reutilizable | `components/EmptyState.tsx`: props `icon` (LucideIcon), `title`, `description?`, `action?` (ReactNode). Círculo con icono + anillo dashed decorativo. Aplicado en: InboxList (sin convs), /contacts (sin resultados + búsqueda vacía), /knowledge (sin docs), /connectors (sin configs), /api-keys (sin keys), /webhooks (sin webhooks). | Fase F12 |
+| ConversationCard memoizado | `ConversationCard` envuelto en `React.memo` para evitar re-renders en actualizaciones de lista. `useMemo` para `hasAdvancedFilters` en InboxList. `prefetch` explícito en Links del nav. | Fase F12 |
 
 ---
 
-## Prompt de arranque — Fase F12 (siguiente prioridad frontend)
+## Prompt de arranque — Fase F13 (siguiente prioridad frontend)
 
 ```
-Retomo Fase F12 — Frontend: Toasts + Command palette + Exportación GDPR + Billing.
+Retomo Fase F13 — Frontend: Toasts globales + Command palette + Exportación GDPR + Billing.
 Contexto:
-- Fase F11 (páginas de error + notificaciones browser + accesibilidad + gestión de sesión) completada. PR abierto en rama claude/fase-f11-frontend-RQwTL.
-- Rama nueva: git fetch origin main && git checkout -b claude/fase-f12-frontend-XXXXX origin/main
-- Main contiene backend Fases 0-29 + frontend F2-F8 + F11 en Next.js 16 + shadcn/ui.
-- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F11" y este prompt). Nada más.
+- Fase F12 (dark mode + responsive móvil + rendimiento + empty states) completada. PR abierto en rama claude/fase-f12-frontend-qNYGX.
+- Rama nueva: git fetch origin main && git checkout -b claude/fase-f13-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-29 + frontend F2-F12 en Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F12" y este prompt). Nada más.
 
-Estado tras Fase F11 (ya en rama claude/fase-f11-frontend-RQwTL):
-  A. app/not-found.tsx: 404 con links a /dashboard e /inbox.
-  B. app/error.tsx: boundary de error con "Reintentar" + digest.
-  C. app/(app)/loading.tsx: skeleton animado accesible.
-  D. Notificaciones browser: use-notifications + NotificationPermissionRequester.
-  E. Accesibilidad: SkipToContent, #main-content, aria-live en badge inbox.
-  F. SessionExpiryBanner: alerta amber/rojo según tiempo de expiración del token.
+Estado tras Fase F12 (ya en rama claude/fase-f12-frontend-qNYGX):
+  A. Dark mode toggle: ThemeProvider (light/dark/system) + localStorage + clase .dark en <html>.
+     Toggle Sun/Moon/Monitor en footer de AppNav.
+  B. Responsive móvil: hamburger fijo en <md, sidebar overlay deslizable, pt-12 en main.
+  C. Rendimiento: ConversationCard en React.memo, useMemo en InboxList, prefetch en nav.
+  D. EmptyState: componente reutilizable aplicado en inbox, contacts, knowledge, connectors, api-keys, webhooks.
 
-Opciones a implementar en Fase F12 (en orden A → B → C → D):
+Opciones a implementar en Fase F13 (en orden A → B → C → D):
   A. Toast notifications globales:
-     - Instalar o crear un sistema de toasts (sonner o implementación propia).
-     - Wrap en Providers. Hook useToast disponible en todo el app.
-     - Añadir toasts en acciones CRUD de todas las páginas existentes (crear/eliminar/error).
+     - Implementación propia sin instalar paquetes: componente Toaster + hook useToast.
+     - Toast store con Zustand (ya instalado): lista de toasts con id, message, type (success/error/info).
+     - Toaster renderizado en app/(app)/layout.tsx. Auto-dismiss tras 4s.
+     - Añadir toasts en acciones CRUD de páginas: connectors, api-keys, webhooks, knowledge, canned-responses.
 
-  B. Command palette (Cmd+K):
-     - Componente CommandPalette modal con input de búsqueda.
-     - Busca contactos (GET /v1/contacts/search?q=) y conversaciones (GET /v1/inbox?search=).
-     - Atajo Cmd+K (Mac) / Ctrl+K (Windows/Linux) en root layout.
-     - Navega al item seleccionado.
+  B. Command palette (Cmd+K / Ctrl+K):
+     - Componente CommandPalette modal (dialog de Radix ya disponible).
+     - Input debounced → busca en paralelo: contactos (GET /v1/contacts/search?q=) y convs (GET /v1/inbox?search=).
+     - Atajo de teclado en app/(app)/layout.tsx con useEffect + keydown.
+     - Navega al item seleccionado. Grupos: "Contactos" y "Conversaciones".
 
   C. Exportación GDPR desde el frontend:
-     - Botón "Exportar mis datos" en /dashboard o en /users/[user_id].
-     - POST /v1/tenants/me/export → polling GET status → botón de descarga (URL S3 firmada).
-     - Estados visuales: queued → processing → done/error.
+     - Botón "Exportar mis datos" en /users/[user_id] o /dashboard.
+     - POST /v1/tenants/me/export → 202. Polling GET /v1/tenants/me/export/{id}/status cada 3s.
+     - Cuando done: botón de descarga → GET /v1/tenants/me/export/{id}/download (URL firmada S3).
+     - Estados visuales: queued → processing → done/error con iconos.
 
   D. Página de billing y uso:
-     - /billing: consumo actual (messages, conversations, LLM cost) via GET /v1/metrics/dashboard.
-     - Cuotas del plan y porcentaje de uso con barras de progreso.
+     - /billing: GET /v1/metrics/dashboard para consumo actual.
+     - GET /v1/billing/usage (si existe) o calcular desde dashboard.
+     - Barras de progreso de cuotas (messages, conversations, documents).
      - Nav: AppNav añade /billing (CreditCard icon).
 
 Reglas:
 - NO tocar src/ Python
-- Commit + push + PR + actualizar CLAUDE.md + generar prompt F13
+- Commit + push + PR + actualizar CLAUDE.md + generar prompt F14
 - Al cerrar esta sesión, generar el prompt de arranque de la próxima (regla recursiva).
 ```
 

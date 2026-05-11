@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { EmptyState } from "@/components/EmptyState"
 import { apiFetch, apiGet, API_URL } from "@/lib/api"
 import type { KbDocumentOut } from "@/lib/types"
 
@@ -226,11 +227,11 @@ export default function KnowledgePage() {
           Cargando documentos...
         </div>
       ) : !docs?.length ? (
-        <div className="text-center py-16 text-zinc-400 text-sm">
-          <BookOpen className="w-8 h-8 mx-auto mb-3 opacity-30" />
-          <p>No hay documentos en la base de conocimiento.</p>
-          <p className="text-xs mt-1">Sube un PDF o añade una URL para empezar.</p>
-        </div>
+        <EmptyState
+          icon={BookOpen}
+          title="Base de conocimiento vacía"
+          description="Sube un PDF o añade una URL para que el agente pueda responder con información específica."
+        />
       ) : (
         <div className="space-y-2">
           {docs.map((doc) => (

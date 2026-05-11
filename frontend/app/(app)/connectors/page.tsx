@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { apiFetch, apiGet } from "@/lib/api"
 import type { ConnectorConfigOut, ConnectorDefOut } from "@/lib/types"
+import { EmptyState } from "@/components/EmptyState"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -242,14 +243,17 @@ export default function ConnectorsPage() {
           ))}
         </div>
       ) : configs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-zinc-400 gap-3">
-          <Plug className="w-12 h-12" />
-          <p className="text-sm">No hay conectores configurados.</p>
-          <Button variant="outline" onClick={() => setShowCreate(true)} className="gap-2">
-            <Plus className="w-4 h-4" />
-            Agregar el primero
-          </Button>
-        </div>
+        <EmptyState
+          icon={Plug}
+          title="Sin conectores"
+          description="Conecta tu tienda WooCommerce o Shopify para que el agente pueda responder sobre productos y pedidos."
+          action={
+            <Button variant="outline" onClick={() => setShowCreate(true)} className="gap-2">
+              <Plus className="w-4 h-4" />
+              Agregar conector
+            </Button>
+          }
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {configs.map(c => (
