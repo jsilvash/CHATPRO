@@ -380,6 +380,53 @@ export interface ApiKeyOut {
   created_at: string
 }
 
+// Tenant
+export interface TenantResponse {
+  id: string
+  slug: string
+  name: string
+  plan: string
+  is_active: boolean
+  created_at: string
+}
+
+// Billing / métricas históricas
+export interface UsageMetricOut {
+  id: string
+  tenant_id: string
+  metric_date: string
+  messages_in: number
+  messages_out: number
+  conversations_active: number
+  llm_input_tokens: number
+  llm_output_tokens: number
+  llm_cost_cents: number
+  storage_bytes: number
+  api_requests: number
+}
+
+export interface MetricsSummaryOut {
+  period_start: string
+  period_end: string
+  messages_in: number
+  messages_out: number
+  conversations_active: number
+  llm_input_tokens: number
+  llm_output_tokens: number
+  llm_cost_cents: number
+  storage_bytes: number
+  api_requests: number
+}
+
+export interface QuotaOut {
+  tenant_id: string
+  max_messages_per_month: number | null
+  max_conversations_active: number | null
+  max_llm_cost_cents_per_month: number | null
+  max_storage_bytes: number | null
+  max_api_requests_per_day: number | null
+}
+
 // Webhooks salientes
 export interface WebhookOutItem {
   id: string

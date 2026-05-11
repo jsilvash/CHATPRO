@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, use } from "react"
+import { useEffect, useState, useCallback, useRef, use } from "react"
 import { useRouter } from "next/navigation"
 import { apiGet, apiFetch } from "@/lib/api"
 import type { WaNumberResponse, WaNumberMetricsOut, PersonaListResponse } from "@/lib/types"
@@ -21,7 +21,16 @@ import {
   TrendingUp,
   Bot,
   Save,
+  RefreshCw,
+  QrCode,
+  X,
+  Loader2,
 } from "lucide-react"
+
+interface QrResponse {
+  status: string
+  qr_base64: string
+}
 
 function sessionStatusBadge(status: string) {
   const map: Record<string, { label: string; color: string; icon: React.ElementType }> = {
@@ -66,6 +75,101 @@ function todayMinus(days: number) {
   return d.toISOString().slice(0, 10)
 }
 
+// ── QR Modal ───────────────────────────────────────────────────────────────────
+
+function QrModal({ numberId, onClose }: { numberId: string; onClose: () => void }) {
+  const [qr, setQr] = useState<QrResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchQr = useCallback(async () => {
+    try {
+      const res = await apiGet<QrResponse>(`/v1/wa-numbers/${numberId}/qr`)
+      setQr(res)
+      if (res.status === "WORKING") {
+        // Sesión ya conectada → cerrar modal
+        if (intervalRef.current) clearInterval(intervalRef.current)
+        setTimeout(onClose, 1500)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al obtener QR")
+    } finally {
+      setLoading(false)
+    }
+  }, [numberId, onClose])
+
+  useEffect(() => {
+    fetchQr()
+    // Refrescar QR cada 20s (los QR de WAHA expiran)
+    intervalRef.current = setInterval(fetchQr, 20_000)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [fetchQr])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-xl p-6 max-w-sm w-full mx-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <QrCode className="w-5 h-5 text-zinc-500" />
+            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+              Escanear código QR
+            </h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            aria-label="Cerrar"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <p className="text-sm text-zinc-500">
+          Abre WhatsApp en tu teléfono → Dispositivos vinculados → Vincular un dispositivo y escanea este código.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center justify-center h-48">
+            <Loader2 className="w-8 h-8 animate-spin text-zinc-400" />
+          </div>
+        ) : error ? (
+          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 text-red-700 text-sm dark:bg-red-900/20 dark:text-red-400">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            {error}
+          </div>
+        ) : qr?.status === "WORKING" ? (
+          <div className="flex flex-col items-center gap-2 py-6">
+            <CheckCircle2 className="w-12 h-12 text-green-500" />
+            <p className="text-sm font-medium text-green-700 dark:text-green-400">¡Conectado correctamente!</p>
+          </div>
+        ) : qr?.qr_base64 ? (
+          <div className="flex flex-col items-center gap-3">
+            <img
+              src={`data:image/png;base64,${qr.qr_base64}`}
+              alt="QR code para vincular WhatsApp"
+              className="w-48 h-48 rounded-lg border border-zinc-200 dark:border-zinc-700"
+            />
+            <p className="text-xs text-zinc-400">El código se actualiza automáticamente cada 20 segundos</p>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-32 text-sm text-zinc-400">
+            No hay QR disponible. El estado actual es: {qr?.status}
+          </div>
+        )}
+
+        <Button variant="outline" size="sm" className="w-full" onClick={onClose}>
+          Cerrar
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Página principal ───────────────────────────────────────────────────────────
+
+const NON_WORKING_STATUSES = new Set(["STARTING", "SCAN_QR_CODE", "FAILED", "STOPPED", ""])
+
 export default function WaNumberDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const router = useRouter()
@@ -82,6 +186,9 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
   const [loading, setLoading] = useState(true)
   const [metricsLoading, setMetricsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showQrModal, setShowQrModal] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadNumber = useCallback(async () => {
     try {
@@ -98,7 +205,6 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
     try {
       const res = await apiGet<PersonaListResponse>("/v1/personas")
       setPersonas(res.items)
-      // Restaurar la persona asignada desde localStorage
       const stored = localStorage.getItem(`wa-number-persona-${id}`)
       if (stored) {
         setAssignedPersonaId(stored)
@@ -128,6 +234,29 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
   useEffect(() => { loadPersonas() }, [loadPersonas])
   useEffect(() => { if (!loading) loadMetrics() }, [loading, loadMetrics])
 
+  // Polling cada 5s cuando el estado no es WORKING
+  useEffect(() => {
+    if (!waNumber) return
+    const shouldPoll = NON_WORKING_STATUSES.has(waNumber.session_status)
+    if (shouldPoll) {
+      pollingRef.current = setInterval(async () => {
+        try {
+          const wn = await apiGet<WaNumberResponse>(`/v1/wa-numbers/${id}`)
+          setWaNumber(wn)
+          // Si pasó a WORKING, detener polling
+          if (!NON_WORKING_STATUSES.has(wn.session_status)) {
+            if (pollingRef.current) clearInterval(pollingRef.current)
+          }
+        } catch {
+          // silencioso
+        }
+      }, 5_000)
+    } else {
+      if (pollingRef.current) clearInterval(pollingRef.current)
+    }
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current) }
+  }, [id, waNumber?.session_status]) // eslint-disable-line react-hooks/exhaustive-deps
+
   async function handleAssignPersona() {
     setPersonaSaving(true)
     setPersonaSuccess(false)
@@ -151,7 +280,19 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  async function handleReconnect() {
+    setReconnecting(true)
+    setError(null)
+    try {
+      // Intentar iniciar sesión WAHA y mostrar el QR
+      setShowQrModal(true)
+    } finally {
+      setReconnecting(false)
+    }
+  }
+
   const assignedPersona = personas.find(p => p.id === assignedPersonaId)
+  const isNotWorking = waNumber ? NON_WORKING_STATUSES.has(waNumber.session_status) : false
 
   return (
     <div className="p-6 space-y-6 max-w-4xl">
@@ -175,16 +316,86 @@ export default function WaNumberDetailPage({ params }: { params: Promise<{ id: s
           <div className="h-4 bg-zinc-200 dark:bg-zinc-700 rounded w-1/4" />
         </div>
       ) : waNumber && (
-        <div className="space-y-1">
-          <div className="flex items-center gap-3">
-            <Smartphone className="w-5 h-5 text-zinc-400" />
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <Smartphone className="w-5 h-5 text-zinc-400 shrink-0" />
             <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">{waNumber.label}</h1>
             {sessionStatusBadge(waNumber.session_status)}
+            {/* Indicador de polling activo */}
+            {isNotWorking && (
+              <span className="flex items-center gap-1 text-xs text-zinc-400">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                Verificando estado…
+              </span>
+            )}
           </div>
           <p className="text-sm text-zinc-500 font-mono ml-8">
             {waNumber.phone ?? waNumber.waha_session_name}
           </p>
+
+          {/* Alerta QR / Reconectar */}
+          {waNumber.session_status === "SCAN_QR_CODE" && (
+            <div className="ml-0 flex items-center gap-3 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
+              <QrCode className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
+                  Es necesario escanear el QR para conectar este número
+                </p>
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">
+                  Abre el modal y escanea con WhatsApp en tu teléfono
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setShowQrModal(true)}
+                className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                Ver QR
+              </Button>
+            </div>
+          )}
+
+          {(waNumber.session_status === "FAILED" || waNumber.session_status === "STOPPED") && (
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-800">
+              <XCircle className="w-5 h-5 text-red-500 shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-red-800 dark:text-red-300">
+                  La sesión de WhatsApp está {waNumber.session_status === "FAILED" ? "en error" : "detenida"}
+                </p>
+                <p className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                  Usa el botón de reconectar para reiniciar la sesión y escanear el QR
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleReconnect}
+                disabled={reconnecting}
+                className="gap-1.5"
+              >
+                {reconnecting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                Reconectar
+              </Button>
+            </div>
+          )}
         </div>
+      )}
+
+      {/* QR Modal */}
+      {showQrModal && (
+        <QrModal
+          numberId={id}
+          onClose={() => {
+            setShowQrModal(false)
+            // Refrescar estado del número al cerrar el modal
+            loadNumber()
+          }}
+        />
       )}
 
       {/* Asignación de persona */}
