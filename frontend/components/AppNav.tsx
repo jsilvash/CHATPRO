@@ -2,10 +2,11 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot } from "lucide-react"
+import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
+import { useOverdueCount } from "@/hooks/use-overdue"
 import { Badge } from "@/components/ui/badge"
 
 interface AppNavProps {
@@ -22,12 +23,14 @@ const navItems = [
   { href: "/canned-responses", label: "Respuestas rápidas", icon: Zap },
   { href: "/wa-numbers", label: "Números WA", icon: Smartphone },
   { href: "/personas", label: "Personas IA", icon: Bot },
+  { href: "/office-hours", label: "Horarios", icon: Clock3 },
 ]
 
 export function AppNav({ session }: AppNavProps) {
   const pathname = usePathname()
   const router = useRouter()
   const { waitingCount } = useNotifications()
+  const overdueCount = useOverdueCount()
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" })
@@ -63,6 +66,11 @@ export function AppNav({ session }: AppNavProps) {
               {href === "/inbox" && waitingCount > 0 && (
                 <Badge variant="warning" className="text-xs px-1.5 py-0">
                   {waitingCount}
+                </Badge>
+              )}
+              {href === "/inbox" && overdueCount > 0 && (
+                <Badge variant="destructive" className="text-xs px-1.5 py-0" title={`${overdueCount} conversaciones vencidas (+30min)`}>
+                  {overdueCount}!
                 </Badge>
               )}
             </Link>

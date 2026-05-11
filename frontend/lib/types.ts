@@ -14,6 +14,26 @@ export interface ConversationSummary {
   tags: string[]
   notes_count: number
   created_at: string
+  waiting_minutes: number | null
+}
+
+export interface OverdueConversation {
+  id: string
+  wa_contact_phone: string
+  wa_contact_name: string
+  status: string
+  waiting_minutes: number | null
+  assigned_user_id: string | null
+}
+
+export interface OverdueResponse {
+  items: OverdueConversation[]
+  total: number
+}
+
+export interface BulkActionResponse {
+  updated: number
+  errors: string[]
 }
 
 export interface ConversationListResponse {
@@ -303,6 +323,47 @@ export interface MessageSearchResult {
 export interface SearchResponse {
   items: MessageSearchResult[]
   total: number
+}
+
+// Métricas agente por período
+export interface AgentMetricsOut {
+  user_id: string
+  date_from: string
+  date_to: string
+  conversations_handled: number
+  avg_first_response_sec: number | null
+  avg_resolution_sec: number | null
+  messages_sent: number
+  notes_created: number
+  busiest_hour: number | null
+}
+
+// Office hours
+export interface OfficeHoursOut {
+  id: string
+  tenant_id: string
+  wa_number_id: string | null
+  day_of_week: number
+  hour_start: number
+  hour_end: number
+  is_active: boolean
+  out_of_hours_message: string
+  created_at: string
+  updated_at: string
+}
+
+export interface OfficeHoursListOut {
+  items: OfficeHoursOut[]
+  total: number
+}
+
+// Status history
+export interface ConversationStatusHistoryEntry {
+  id: string
+  old_status: string | null
+  new_status: string
+  changed_by_user_id: string | null
+  changed_at: string
 }
 
 // Métricas SSE
