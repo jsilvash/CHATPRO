@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3 } from "lucide-react"
+import { MessageSquare, LayoutDashboard, LogOut, Users, Phone, BarChart2, Plug, Zap, Smartphone, Bot, Clock3, BookOpen, Key, Webhook } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { JWTPayload } from "@/lib/auth"
 import { useNotifications } from "@/hooks/use-notifications"
@@ -23,6 +23,9 @@ const navItems = [
   { href: "/wa-numbers", label: "Números WA", icon: Smartphone },
   { href: "/personas", label: "Personas IA", icon: Bot },
   { href: "/office-hours", label: "Horarios", icon: Clock3 },
+  { href: "/knowledge", label: "Conocimiento", icon: BookOpen },
+  { href: "/api-keys", label: "API Keys", icon: Key },
+  { href: "/webhooks", label: "Webhooks", icon: Webhook },
 ]
 
 export function AppNav({ session }: AppNavProps) {

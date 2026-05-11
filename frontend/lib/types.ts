@@ -354,3 +354,41 @@ export interface StreamMetrics {
   llm_cost_cents_today: number
   timestamp: string
 }
+
+// Knowledge Base
+export interface KbDocumentOut {
+  id: string
+  tenant_id: string
+  wa_number_id: string | null
+  title: string
+  source_type: string
+  source_uri: string | null
+  status: string
+  error: string | null
+}
+
+// API Keys
+export interface ApiKeyOut {
+  id: string
+  tenant_id: string
+  name: string
+  prefix: string
+  scopes: string[]
+  last_used_at: string | null
+  revoked_at: string | null
+  created_by_user_id: string | null
+  created_at: string
+}
+
+// Webhooks salientes
+export interface WebhookOutItem {
+  id: string
+  tenant_id: string
+  url: string
+  events: string[]
+  enabled: boolean
+  consecutive_failures: number
+  last_success_at: string | null
+  last_failure_at: string | null
+  created_at: string
+}
