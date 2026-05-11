@@ -1,16 +1,18 @@
 "use client"
 
 import { useState } from "react"
-import { Send } from "lucide-react"
+import { Send, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
 interface ReplyBoxProps {
   onSend: (text: string) => Promise<void>
   disabled?: boolean
+  onCannedToggle?: () => void
+  showCannedActive?: boolean
 }
 
-export function ReplyBox({ onSend, disabled }: ReplyBoxProps) {
+export function ReplyBox({ onSend, disabled, onCannedToggle, showCannedActive }: ReplyBoxProps) {
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
 
@@ -44,14 +46,28 @@ export function ReplyBox({ onSend, disabled }: ReplyBoxProps) {
           className="flex-1 resize-none min-h-[72px] max-h-40"
           disabled={disabled || sending}
         />
-        <Button
-          onClick={handleSend}
-          disabled={!text.trim() || sending || disabled}
-          size="icon"
-          className="h-9 w-9 shrink-0"
-        >
-          <Send className="h-4 w-4" />
-        </Button>
+        <div className="flex flex-col gap-1.5">
+          {onCannedToggle && (
+            <Button
+              onClick={onCannedToggle}
+              disabled={disabled}
+              size="icon"
+              variant={showCannedActive ? "default" : "outline"}
+              className="h-9 w-9 shrink-0"
+              title="Respuestas rápidas"
+            >
+              <Zap className="h-4 w-4" />
+            </Button>
+          )}
+          <Button
+            onClick={handleSend}
+            disabled={!text.trim() || sending || disabled}
+            size="icon"
+            className="h-9 w-9 shrink-0"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </div>
   )
