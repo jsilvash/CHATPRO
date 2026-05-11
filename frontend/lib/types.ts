@@ -14,6 +14,26 @@ export interface ConversationSummary {
   tags: string[]
   notes_count: number
   created_at: string
+  waiting_minutes: number | null
+}
+
+export interface OverdueConversation {
+  id: string
+  wa_contact_phone: string
+  wa_contact_name: string
+  status: string
+  waiting_minutes: number | null
+  assigned_user_id: string | null
+}
+
+export interface OverdueResponse {
+  items: OverdueConversation[]
+  total: number
+}
+
+export interface BulkActionResponse {
+  updated: number
+  errors: string[]
 }
 
 export interface ConversationListResponse {
@@ -391,4 +411,61 @@ export interface WebhookOutItem {
   last_success_at: string | null
   last_failure_at: string | null
   created_at: string
+}
+
+// Billing / Uso
+export interface UsageMetricOut {
+  metric_date: string
+  messages_in: number
+  messages_out: number
+  conversations_active: number
+  llm_input_tokens: number
+  llm_output_tokens: number
+  llm_cost_cents: number
+  storage_bytes: number
+  api_requests: number
+}
+
+export interface MetricsSummaryOut {
+  period_start: string
+  period_end: string
+  messages_in: number
+  messages_out: number
+  conversations_active: number
+  llm_input_tokens: number
+  llm_output_tokens: number
+  llm_cost_cents: number
+  storage_bytes: number
+  api_requests: number
+}
+
+export interface QuotaOut {
+  tenant_id: string
+  max_messages_per_month: number | null
+  max_conversations_active: number | null
+  max_llm_cost_cents_per_month: number | null
+  max_storage_bytes: number | null
+  max_api_requests_per_day: number | null
+  updated_at: string
+}
+
+// GDPR Export
+export interface ExportJobOut {
+  id: string
+  tenant_id: string
+  status: string
+  error: string | null
+  created_at: string
+}
+
+export interface ExportStatusOut {
+  id: string
+  status: string
+  error: string | null
+  created_at: string
+  finished_at: string | null
+}
+
+export interface DownloadOut {
+  url: string
 }
