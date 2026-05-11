@@ -1,5 +1,6 @@
 "use client"
 
+import { memo } from "react"
 import { formatDistanceToNow } from "@/lib/date"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
@@ -34,7 +35,7 @@ interface ConversationCardProps {
   onClick?: () => void
 }
 
-export function ConversationCard({ conv, isActive, onClick }: ConversationCardProps) {
+export const ConversationCard = memo(function ConversationCard({ conv, isActive, onClick }: ConversationCardProps) {
   return (
     <button
       onClick={onClick}
@@ -87,4 +88,4 @@ export function ConversationCard({ conv, isActive, onClick }: ConversationCardPr
       </div>
     </button>
   )
-}
+})

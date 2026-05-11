@@ -7,7 +7,8 @@ import type { ContactSearchOut } from "@/lib/types"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Search, Phone, MessageSquare, ChevronRight, Loader2 } from "lucide-react"
+import { Search, Phone, MessageSquare, ChevronRight, Loader2, Users } from "lucide-react"
+import { EmptyState } from "@/components/EmptyState"
 
 export default function ContactsPage() {
   const [query, setQuery] = useState("")
@@ -94,14 +95,17 @@ export default function ContactsPage() {
           ))}
         </div>
       ) : searched && !loading ? (
-        <p className="text-center text-sm text-zinc-400 py-12">
-          No se encontraron contactos para &quot;{query}&quot;
-        </p>
+        <EmptyState
+          icon={Users}
+          title="Sin resultados"
+          description={`No se encontraron contactos para "${query}".`}
+        />
       ) : !query ? (
-        <div className="text-center py-16 space-y-2">
-          <Search className="w-8 h-8 text-zinc-200 mx-auto dark:text-zinc-700" />
-          <p className="text-sm text-zinc-400">Escribe para buscar contactos</p>
-        </div>
+        <EmptyState
+          icon={Search}
+          title="Busca un contacto"
+          description="Escribe un nombre o número de teléfono para encontrar contactos."
+        />
       ) : null}
     </div>
   )
