@@ -12,7 +12,7 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 - **Backend:** Python 3.12 + FastAPI + SQLAlchemy 2.0 (sync) + Alembic
 - **BD:** PostgreSQL 16 + pgvector (Fase 5+)
 - **Cache / Colas:** Redis 7 + Celery 5
-- **Frontend:** Next.js 15 + TypeScript (Fase 8+)
+- **Frontend:** Next.js 16 + TypeScript + shadcn/ui + TanStack Query v5 + Zustand (Fase F2+)
 - **IA:** Anthropic Claude (Sonnet/Haiku según costo)
 - **WhatsApp:** WAHA Plus (ÚNICO transporte — sin Cloud API, sin Evolution, sin templates Meta)
 
@@ -44,8 +44,12 @@ ChatPro es una plataforma SaaS **multi-tenant** de WhatsApp Hub. Permite a N ten
 | 25 | SLA panel + tags conversaciones + canned responses + notificaciones WS | ✅ Mergeada a main |
 | 26 | Auto-asignación round-robin + notas internas + historial status + templates variables | ✅ Mergeada a main |
 | 27 | Filtros inbox + bulk actions + stats usuario + webhook events notas | ✅ Mergeada a main |
-| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main (PR #24) |
-| 29 | Office hours + waiting time + menciones notas + métricas agente | ✅ PR abierto |
+| 28 | Dashboard métricas + deactivate user + export CSV + búsqueda contactos | ✅ Mergeada a main |
+| 29 | Office hours + waiting time + menciones notas + métricas agente | ✅ Mergeada a main |
+| F1 | Discovery frontend (arquitectura, decisiones, stack) | ✅ Completada |
+| F2 | Frontend Next.js: Login + Inbox list + Inbox detalle + WebSocket | ✅ PR abierto |
+| F3 | Frontend: Dashboard operativo + gestión usuarios + contactos + SLA | ✅ PR abierto |
+| F4 | Frontend: Conectores + canned responses + métricas SSE | ✅ PR abierto |
 
 ### Plan completo
 Ver `WHATSAPP_HUB_PLAN.md` en la raíz (1300+ líneas, todos los detalles de arquitectura).
@@ -251,6 +255,61 @@ Todo en español: código, UI, comentarios, commits, docs. Sin excepción.
 | Waiting since en conversaciones | `WaConversation.waiting_since` (DateTime nullable, migración 0027). Se setea en `_auto_escalate_if_needed()` al pasar a waiting_agent; se limpia en `take_conversation()` y `reply_conversation()` al pasar a agent. `ConversationSummary.waiting_minutes: int | None` calculado en `_conv_summary()`. `GET /v1/inbox?sort=waiting_time` ordena por `waiting_since ASC NULLS LAST`. `GET /v1/inbox/overdue?threshold_minutes=30` declarado ANTES de `/{conversation_id}`. | Fase 29 |
 | Menciones en notas (@usuario) | Migración 0028 agrega `mentions JSONB default '[]'` a `conversation_notes`. `_MENTION_PATTERN = re.compile(r"@([\w.+-]+(?:@[\w.-]+)?)")` en `inbox/api.py`. `_resolve_mentions(text, tenant_id, db)` retorna `list[uuid.UUID]` buscando por email exacto o full_name case-insensitive (solo usuarios activos del tenant). Persiste como lista de strings UUID en JSONB. Notifica via `notification_manager.broadcast_from_sync(tenant_id, {event: "note.mention", ...})`. `NoteOut.mentions: list[uuid.UUID]`. | Fase 29 |
 | Métricas de agente por período | `GET /v1/users/{user_id}/metrics?date_from=&date_to=` declarado ANTES de `/{user_id}` GET. Accesible por admin/owner O el propio usuario; 403 si agente ve a otro agente; 404 si user_id no pertenece al tenant. Calcula: `conversations_handled` (resolved_at en período), `avg_first_response_sec`, `avg_resolution_sec` (ambos en segundos float nullable), `messages_sent` (direction=out), `notes_created`, `busiest_hour` (hora 0-23 con más msgs enviados, nullable). Schema `AgentMetricsOut` en `src/api/v1/users.py`. | Fase 29 |
+| Frontend stack | Next.js 16.2.x + TypeScript + Tailwind v4 + shadcn/ui (manual) + TanStack Query v5 + Zustand + jose. Directorio `frontend/` en raíz del repo. | Fase F2 |
+| Auth frontend | Cookies httpOnly `chatpro_access` + `chatpro_refresh`. Next.js API Routes hacen proxy al backend. `proxy.ts` (guard de rutas, v16 renombró `middleware.ts`→`proxy.ts`). `cookies()` es async en v16. | Fase F2 |
+| WS frontend | `useConversationSocket(convId)`: WebSocket a `/ws/inbox/{convId}?token=<jwt>`. Token obtenido de `/api/auth/ws-token` (Next.js API route que lee cookie httpOnly). Auto-reconexión tras 3s. | Fase F2 |
+| Notificaciones WS | `useNotifications()`: WebSocket a `/ws/notifications/{tenant_id}?token=`. Decodifica tenant_id del JWT en cliente con `decodeJwt(jose)`. Badge de `waiting_agent` en nav. | Fase F2 |
+| Inbox frontend | InboxList (filtros status/search/tags + paginación), ConversationCard, ConversationView (mensajes + acciones take/close/reply + panel tags+notas). `params` en pages son `Promise<{...}>` en Next.js 16 — deben ser awaited. | Fase F2 |
+| Dashboard frontend | `app/(app)/dashboard/page.tsx`: client component, `apiGet("/v1/metrics/dashboard")` con auto-refresh `setInterval(30_000)`. Widgets con iconos lucide-react. Skeleton de carga con `animate-pulse`. | Fase F3 |
+| Gestión usuarios frontend | `app/(app)/users/page.tsx`: lista con deactivate modal inline. `app/(app)/users/[user_id]/page.tsx`: detalle + stats (2 endpoints en paralelo con Promise.all). `app/(app)/users/agents/page.tsx`: carga de trabajo con LoadBar. | Fase F3 |
+| Contactos frontend | `app/(app)/contacts/page.tsx`: búsqueda debounced (350ms) llamando `GET /v1/contacts/search`. `app/(app)/contacts/[contact_id]/page.tsx`: carga `GET /v1/contacts/{id}` + `GET /v1/contacts/{id}/facts` + lista inbox en paralelo; filtra convs por phone_e164. | Fase F3 |
+| SLA frontend | `app/(app)/sla/page.tsx`: `GET /v1/inbox/sla-report?date_from&date_to` con filtros de fecha. Formato plano del backend: `avg_first_response_seconds`, `p50_first_response_seconds`, etc. Muestra total y resueltas con % de resolución. | Fase F3 |
+| Nav F3 | `AppNav.tsx` añade rutas: `/users` (Users icon), `/contacts` (Phone icon), `/sla` (BarChart2 icon) con `isActive = pathname.startsWith(href)`. | Fase F3 |
+| Panel conectores | `app/(app)/connectors/page.tsx`: lista con cards (status badge, display_name, connector_name). Modal `CreateModal` con selección de tipo (WooCommerce/Shopify) + form credenciales. DELETE con confirm. Navega a `/connectors/{id}`. | Fase F4 |
+| Detalle conector | `app/(app)/connectors/[config_id]/page.tsx`: tabs Estadísticas / Buscar productos / Credenciales. StatsSection: products_count + orders_count + sync timestamps + botón sync. ProductSearchSection: form + resultados con score. ConfigureSection: form credenciales con campos tipo password para secrets. | Fase F4 |
+| Canned responses | `app/(app)/canned-responses/page.tsx`: lista con búsqueda debounced 350ms. CannedForm inline para create/edit. PreviewModal con render de variables. Acciones por item: preview, editar, eliminar. Detección de variables `{{nombre}}` en textarea con chips inline. | Fase F4 |
+| Dashboard SSE | `useMetricsSSE` hook en dashboard/page.tsx: EventSource a `/v1/metrics/stream?token=<jwt>`. Token obtenido de `/api/auth/ws-token`. onError: reconexión tras 10s. Actualiza `messages_in_today`, `messages_out_today`, `conversations_active` via overlay. Polling fallback cada 30s si SSE no conectado. Badge "En vivo" con `Radio` icon cuando SSE activo. | Fase F4 |
+| Nav F4 | `AppNav.tsx` añade rutas: `/connectors` (Plug icon), `/canned-responses` (Zap icon). | Fase F4 |
+
+---
+
+## Prompt de arranque — Fase F5 (siguiente prioridad frontend)
+
+```
+Retomo Fase F5 — Frontend: Office hours + números WA + personas + gestión inbox avanzada.
+Contexto:
+- Fase F4 (conectores + canned responses + métricas SSE) completada. PR abierto en rama claude/fase-f4-frontend-tMph5.
+- Rama nueva: git checkout -b claude/fase-f5-frontend-XXXXX origin/main
+- Main contiene backend Fases 0-28. Frontend en frontend/ con Next.js 16 + shadcn/ui.
+- Primero: leer SOLO CLAUDE.md (secciones "Decisiones F4" y este prompt). Nada más.
+
+Estado tras Fase F4 (ya en rama):
+  A. Conectores: /connectors (lista+crear+eliminar) y /connectors/[id] (stats+buscar+credenciales).
+  B. Canned responses: /canned-responses (CRUD + búsqueda debounced + modal preview variables).
+  C. Dashboard SSE: EventSource a /v1/metrics/stream + fallback polling 30s + badge "En vivo".
+  D. Nav: AppNav añade /connectors (Plug) y /canned-responses (Zap).
+
+Opciones a implementar en Fase F5 (en orden A → B → C → D):
+  A. Gestión de office hours (requiere Fase 29 backend mergeada):
+     - CRUD /v1/office-hours
+     - Selección de número WA + día de semana + hora inicio/fin
+  B. Panel números WA:
+     - Listar (GET /v1/wa-numbers), ver estado WAHA
+     - Métricas por número (GET /v1/wa-numbers/{id}/metrics con filtro fecha)
+     - Página /wa-numbers/[id] con métricas + top contacts
+  C. Gestión de personas (IA):
+     - CRUD /v1/personas (GET/POST/PATCH/DELETE)
+     - Campos: nombre, tono, locale, locale_secondary, auto_detect_locale
+  D. Filtros avanzados inbox:
+     - Filtro por assigned_user_id + date_from + date_to en /inbox
+     - Export CSV (GET /v1/inbox/export) con botón de descarga
+     - Búsqueda full-text (GET /v1/inbox/search?q=)
+
+Reglas:
+- NO tocar src/ Python
+- Arrancar dev server y probar manualmente antes de reportar listo
+- Commit + push + actualizar CLAUDE.md + generar prompt F6
+```
 
 ---
 
